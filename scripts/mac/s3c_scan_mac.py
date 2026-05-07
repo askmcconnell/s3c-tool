@@ -2,7 +2,7 @@
 """
 S3C-Tool Mac File-Level Inventory Scanner
 S3C-Tool — Software Security Supply Chain Tool
-Version: 1.1.0
+Version: 1.2.0
 
 Scans at the FILE level — not just Applications folder or system_profiler.
 Captures: executables, frameworks, dylibs, Python/Node packages, CLI tools.
@@ -15,7 +15,7 @@ Usage:
     python3 s3c_scan_mac.py --quick   # apps + CLI only, skip deep file scan
 """
 
-import os, sys, csv, json, re, subprocess, hashlib, argparse, plistlib
+import os, sys, csv, json, re, subprocess, hashlib, argparse, plistlib, socket
 from datetime import date, datetime
 from pathlib import Path
 
@@ -41,7 +41,7 @@ FIELDNAMES = [
 ]
 
 SVRT_FORMAT_VERSION = '1.0'   # CSV schema version — bump only when columns change
-SCANNER_VERSION     = '1.1.0' # Tool version — follows SemVer (major.minor.patch)
+SCANNER_VERSION     = '1.2.0' # Tool version — follows SemVer (major.minor.patch)
 TODAY = date.today().isoformat()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -563,12 +563,57 @@ def scan_firmware(base_row, rows):
         })
 
 
+S3C_UPLOAD_URL = 'https://askmcconnell.com/wp-json/s3c/v1/upload'
+
+
+def upload_to_s3c(csv_path: str, token: str, label: str | None = None) -> dict:
+    """POST the CSV to the S3C-Tool API. Returns the JSON response dict."""
+    import urllib.request, urllib.error
+    boundary = 'S3CBoundary' + hashlib.md5(csv_path.encode()).hexdigest()[:12]
+    with open(csv_path, 'rb') as f:
+        file_data = f.read()
+    filename = os.path.basename(csv_path)
+    body_parts = []
+    body_parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f'Content-Type: text/csv\r\n\r\n'.encode() + file_data + b'\r\n'
+    )
+    if label:
+        body_parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="machine_label"\r\n\r\n'
+            f'{label}\r\n'.encode()
+        )
+    body_parts.append(f'--{boundary}--\r\n'.encode())
+    body = b''.join(body_parts)
+    req = urllib.request.Request(
+        S3C_UPLOAD_URL,
+        data=body,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type':  f'multipart/form-data; boundary={boundary}',
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return {'error': e.code, 'message': e.read().decode()}
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description='SVRT Mac File-Level Scanner')
+    parser = argparse.ArgumentParser(description=f'S3C-Tool Mac File-Level Inventory Scanner v{SCANNER_VERSION}')
     parser.add_argument('--output', '-o', help='Output CSV path')
     parser.add_argument('--quick', action='store_true',
                         help='Quick scan: apps + CLI only, skip bundled frameworks')
+    parser.add_argument('--autoupload', action='store_true',
+                        help='Automatically upload CSV to S3C-Tool after scanning (requires --token)')
+    parser.add_argument('--token', default='',
+                        help='S3C-Tool API bearer token for --autoupload')
+    parser.add_argument('--label', default='',
+                        help='Machine label for this upload (e.g. MAC-EXEC-01). '
+                             'Defaults to hostname if --autoupload is used and --label is omitted.')
     args = parser.parse_args()
 
     hostname_hash = hash_hostname()
@@ -658,13 +703,32 @@ def main():
     print(f"  FILE SAVED TO:", flush=True)
     print(f"  {output_path}  ({size_kb} KB)", flush=True)
     print(f"", flush=True)
-    print(f"  Next step: upload this file at", flush=True)
-    print(f"  https://askmcconnell.com/s3c", flush=True)
-    print(f"", flush=True)
-
-    # Open Finder to the output folder
-    import subprocess as _sp
-    _sp.run(['open', os.path.dirname(output_path)], check=False)
+    if args.autoupload:
+        if not args.token:
+            print(f"  ERROR: --autoupload requires --token <api_token>", flush=True)
+            sys.exit(1)
+        label = args.label or socket.gethostname()
+        print(f"\n  Uploading to S3C-Tool (label: {label})...", flush=True)
+        result = upload_to_s3c(output_path, args.token, label)
+        if 'uuid' in result:
+            uuid = result['uuid']
+            log_path = os.path.join(os.path.dirname(os.path.abspath(output_path)), 's3c_result.log')
+            with open(log_path, 'a') as lf:
+                lf.write(f"{datetime.utcnow().isoformat()}Z  label={label}  uuid={uuid}  rows={result.get('row_count','?')}\n")
+            print(f"  Upload accepted — Job UUID: {uuid}", flush=True)
+            print(f"  Result logged to: {log_path}", flush=True)
+            print(f"  Report: https://askmcconnell.com/s3c/?scan={uuid}", flush=True)
+            print(f"", flush=True)
+        else:
+            print(f"  Upload failed: {result}", flush=True)
+            print(f"", flush=True)
+    else:
+        print(f"  Next step: upload this file at", flush=True)
+        print(f"  https://askmcconnell.com/s3c", flush=True)
+        print(f"", flush=True)
+        # Open Finder to the output folder
+        import subprocess as _sp
+        _sp.run(['open', os.path.dirname(output_path)], check=False)
 
 if __name__ == '__main__':
     main()

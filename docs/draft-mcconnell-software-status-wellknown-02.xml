@@ -1,0 +1,1007 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- name="GENERATOR" content="github.com/mmarkdown/mmark Mmark Markdown Processor - mmark.miek.nl" -->
+<rfc version="3" ipr="trust200902" docName="draft-mcconnell-software-status-wellknown-02" submissionType="independent" category="info" xml:lang="en" xmlns:xi="http://www.w3.org/2001/XInclude" indexInclude="true">
+
+<front>
+<title abbrev="software-status-wellknown">A Well-Known URI for Software Lifecycle Status</title><seriesInfo value="draft-mcconnell-software-status-wellknown-02" stream="independent" status="informational" name="Internet-Draft"></seriesInfo>
+<author initials="J." surname="McConnell" fullname="Jim McConnell"><organization>Ask McConnell, LLC</organization><address><postal><street></street>
+</postal><email>jim@askmcconnell.com</email>
+<uri>https://askmcconnell.com</uri>
+</address></author><date year="2026" month="April" day="25"></date>
+<area>Applications</area>
+<workgroup>Individual Submission</workgroup>
+<keyword>software</keyword>
+<keyword>lifecycle</keyword>
+<keyword>end-of-life</keyword>
+<keyword>EOL</keyword>
+<keyword>supply chain</keyword>
+<keyword>security</keyword>
+<keyword>well-known</keyword>
+<keyword>firmware</keyword>
+<keyword>IoT</keyword>
+<keyword>multi-product</keyword>
+
+<abstract>
+<t>This document defines a Well-Known URI <xref target="RFC8615"></xref> at which software
+vendors and open-source maintainers may publish machine-readable lifecycle
+status information for their products. A JSON resource retrieved from
+<tt>/.well-known/software-status.json</tt> allows consumers — including security
+tools, software composition analysis (SCA) platforms, vulnerability scanners,
+and system administrators — to programmatically determine whether a specific
+version of a software product is actively supported, in long-term support
+(LTS), under security-only maintenance, or at end-of-life (EOL).</t>
+<t>This revision (-02) extends the schema to support multi-product vendors —
+organizations that ship multiple distinct products or SKUs under a single
+domain. A new optional <tt>products</tt> array at the root of the resource allows
+a single <tt>software-status.json</tt> endpoint to serve lifecycle declarations for
+an entire product catalog, including firmware-based devices such as routers,
+switches, and IoT appliances. This extension is fully backward compatible:
+existing single-product resources require no modification.</t>
+<t>This document also describes, in <eref target="#appendix-b">Appendix B</eref>, a companion convention for
+open-source projects hosted on version-control platforms to publish equivalent
+information within the repository at <tt>.github/software-status.json</tt>.</t>
+</abstract>
+
+</front>
+
+<middle>
+
+<section anchor="introduction"><name>Introduction</name>
+<t>Software products have defined lifecycles. Vendors release versions, provide
+security patches and bug fixes for a period, and eventually discontinue
+support. When support ends, no further patches are issued — including patches
+for newly discovered security vulnerabilities. End-of-life (EOL) software
+represents a significant and persistent risk in organizational environments,
+as it may remain deployed indefinitely after its support window closes.</t>
+<t>Determining whether a specific version of software is currently supported
+requires manual research: locating the vendor's lifecycle policy page,
+interpreting its contents, and correlating the installed version against
+published support dates. This process is not standardized, not machine-
+readable, and not reliable at scale. Many vendors do not publish structured
+lifecycle data at all. Security tools that attempt to automate EOL detection
+must resort to web scraping, curated third-party databases, or inference —
+all of which introduce latency, inaccuracy, and maintenance burden.</t>
+<t>This problem is acutely pronounced for firmware-based network devices —
+routers, switches, wireless access points, firewalls, and IoT appliances.
+A single network equipment vendor may ship hundreds of distinct hardware
+SKUs across multiple product families, each running a different firmware
+version with different embedded component versions and different end-of-support
+dates. Supply chain security tools that scan such devices can identify
+installed software components but have no reliable, vendor-authoritative
+source from which to determine the support status of the firmware itself or
+the components it embeds.</t>
+<t>This document proposes a simple, low-overhead mechanism for software vendors
+and maintainers to publish authoritative lifecycle data in a machine-readable
+format at a predictable location, using the Well-Known URI mechanism defined
+in <xref target="RFC8615"></xref>. The -02 revision extends the schema to accommodate vendors with
+multiple products or SKUs under a single domain.</t>
+<t>The design goals are:</t>
+
+<ul>
+<li><t><strong>Authoritative</strong>: lifecycle data is published directly by the party that
+controls the software's support policy — the vendor or maintainer.</t>
+</li>
+<li><t><strong>Machine-readable</strong>: a single, well-defined JSON format that any
+consuming tool can parse without scraping or inference.</t>
+</li>
+<li><t><strong>Low barrier</strong>: adding a static JSON file to an existing web presence
+requires minimal effort and no new infrastructure.</t>
+</li>
+<li><t><strong>Incrementally deployable</strong>: absence of the resource (HTTP 404) is a
+well-defined signal. Tools can fall back to existing methods when the
+resource is not present.</t>
+</li>
+<li><t><strong>Composable</strong>: the same schema is used for both the Well-Known URI and
+the version-control companion described in <eref target="#appendix-b">Appendix B</eref>, so tools that
+understand one format understand both.</t>
+</li>
+<li><t><strong>Multi-product capable</strong>: a single endpoint MAY describe an entire vendor
+product catalog, enabling network equipment manufacturers and IoT device
+vendors to serve lifecycle status for all of their SKUs from one location.</t>
+</li>
+</ul>
+
+<section anchor="conventions-and-definitions"><name>Conventions and Definitions</name>
+<t>The key words &quot;MUST&quot;, &quot;MUST NOT&quot;, &quot;REQUIRED&quot;, &quot;SHALL&quot;, &quot;SHALL NOT&quot;,
+&quot;SHOULD&quot;, &quot;SHOULD NOT&quot;, &quot;RECOMMENDED&quot;, &quot;NOT RECOMMENDED&quot;, &quot;MAY&quot;, and
+&quot;OPTIONAL&quot; in this document are to be interpreted as described in
+BCP 14 <xref target="RFC2119"></xref> <xref target="RFC8174"></xref> when, and only when, they appear in all
+capitals, as shown here.</t>
+<t>The following terms are used in this document:</t>
+<t><strong>Software product</strong>: A discrete, identifiable unit of software that has
+a defined vendor or maintainer and a versioned release history.</t>
+<t><strong>SKU</strong>: Stock Keeping Unit. In this document, used to refer to a distinct
+hardware model or product variant shipped by a vendor (e.g., a specific
+router model number).</t>
+<t><strong>Firmware</strong>: Software that is embedded in a hardware device and controls
+its operation. Firmware versions are typically tied to specific hardware
+models or product families and are updated by the device vendor.</t>
+<t><strong>Version series</strong>: A major or minor version designation under which
+multiple patch releases may be issued (e.g., &quot;3.2&quot; covering 3.2.0, 3.2.1,
+3.2.2, etc.).</t>
+<t><strong>End-of-life (EOL)</strong>: A state in which a vendor or maintainer has
+permanently ceased issuing any updates, including security patches, for a
+given version series.</t>
+<t><strong>Long-Term Support (LTS)</strong>: A designated version series for which the
+vendor or maintainer commits to an extended support window, typically
+longer than the standard release lifecycle.</t>
+<t><strong>Discontinued</strong>: A hardware product that is no longer manufactured or
+sold. A discontinued product MAY still receive firmware security updates
+for existing deployments; this is distinct from end-of-life.</t>
+<t><strong>Consuming tool</strong>: Any software system that retrieves and processes a
+<tt>software-status.json</tt> resource, including security scanners, SCA tools,
+package managers, and monitoring systems.</t>
+</section>
+</section>
+
+<section anchor="the-software-status-json-resource"><name>The software-status.json Resource</name>
+
+<section anchor="location-and-retrieval"><name>Location and Retrieval</name>
+<t>A software vendor or maintainer that wishes to publish lifecycle status
+information for software associated with a domain SHOULD publish a
+<tt>software-status.json</tt> resource at the Well-Known URI:</t>
+
+<artwork><![CDATA[https://example.com/.well-known/software-status.json
+]]></artwork>
+<t>The resource MUST be served over HTTPS. HTTP retrieval MAY be supported
+for compatibility but consuming tools SHOULD prefer HTTPS and SHOULD warn
+or fail if only HTTP is available.</t>
+<t>The resource MUST be served with a Content-Type of <tt>application/json</tt>.</t>
+<t>If no lifecycle information is available or the vendor has not adopted this
+convention, the server SHOULD return HTTP 404. Consuming tools MUST treat a
+404 response as &quot;no declaration available&quot; and fall back to other methods.
+Consuming tools MUST NOT treat a 404 as evidence that the software is
+end-of-life.</t>
+</section>
+
+<section anchor="caching"><name>Caching</name>
+<t>The resource SHOULD include standard HTTP caching headers. A <tt>max-age</tt> of
+604800 (seven days) is RECOMMENDED for resources that are infrequently
+updated. Consuming tools SHOULD respect <tt>Cache-Control</tt> and <tt>Expires</tt>
+headers.</t>
+<t>In the absence of explicit caching headers, consuming tools SHOULD cache
+a successfully retrieved resource for no fewer than 24 hours and no more
+than 30 days.</t>
+<t>Vendors with large product catalogs (see <eref target="#multi-product-resources">Section 4.5</eref>) whose
+<tt>software-status.json</tt> resource is updated frequently SHOULD set a shorter
+<tt>max-age</tt> (e.g., 86400, one day) and include an <tt>ETag</tt> to allow consuming
+tools to perform conditional GET requests.</t>
+</section>
+</section>
+
+<section anchor="the-software-status-json-schema"><name>The software-status.json Schema</name>
+<t>The <tt>software-status.json</tt> resource is a JSON object (<xref target="RFC8259"></xref>) with
+the following structure. The resource operates in one of two modes,
+determined by the presence of the <tt>products</tt> field:</t>
+
+<ul>
+<li><t><strong>Single-product mode</strong> (default): the root object describes one product.
+This is the mode defined in -00 and -01 and is unchanged.</t>
+</li>
+<li><t><strong>Multi-product mode</strong>: the root object describes a vendor catalog. A
+<tt>products</tt> array contains one entry per product or SKU. See
+<eref target="#multi-product-resources">Section 4.5</eref>.</t>
+</li>
+</ul>
+<t>The two modes are fully backward compatible. A consuming tool that
+does not implement multi-product support SHOULD ignore the <tt>products</tt>
+field if present. A consuming tool that implements multi-product support
+MUST check for the <tt>products</tt> field before processing root-level
+<tt>name</tt> and <tt>versions</tt> fields.</t>
+
+<section anchor="root-object"><name>Root Object</name>
+<t>The root object MUST contain the following fields:</t>
+
+<dl spacing="compact">
+<dt><tt>schema_version</tt> (string, REQUIRED):</dt>
+<dd>The version of this schema. This document defines version <tt>&quot;1.0&quot;</tt>.
+Consuming tools that encounter an unrecognized schema version SHOULD
+process fields they recognize and ignore fields they do not.</dd>
+<dt><tt>vendor</tt> (string, REQUIRED):</dt>
+<dd>The name of the organization or individual responsible for the software's
+support lifecycle. In multi-product mode, this is the vendor organization
+name. In single-product mode, this is the product vendor.</dd>
+</dl>
+<t>In <strong>single-product mode</strong> (when <tt>products</tt> is absent), the root object
+MUST also contain:</t>
+
+<dl spacing="compact">
+<dt><tt>name</tt> (string, REQUIRED):</dt>
+<dd>The human-readable name of the software product.</dd>
+<dt><tt>versions</tt> (array, REQUIRED):</dt>
+<dd>An array of version entry objects as described in <eref target="#version-entries">Section 4.2</eref>.
+MUST contain at least one entry. SHOULD include all version series for
+which the vendor has a defined support position, including EOL versions.</dd>
+</dl>
+<t>The root object MAY contain the following fields in either mode:</t>
+
+<dl spacing="compact">
+<dt><tt>specification</tt> (string):</dt>
+<dd>A URI identifying the specification that defines this schema. When
+present, consuming tools MAY use this field to verify schema
+compatibility or route processing to a version-appropriate parser.
+For resources conforming to this document, the value SHOULD be the
+IETF Datatracker URI for this Internet-Draft or its successor RFC
+(e.g., <tt>&quot;https://datatracker.ietf.org/doc/draft-mcconnell-software-status-wellknown/&quot;</tt>).
+This field is self-documenting: it allows a human or tool encountering
+an unfamiliar <tt>software-status.json</tt> resource to locate the governing
+specification without prior knowledge.</dd>
+<dt><tt>homepage</tt> (string):</dt>
+<dd>A URI for the vendor's primary website. In single-product mode, MAY
+refer to the product page specifically.</dd>
+<dt><tt>source</tt> (string):</dt>
+<dd>A URI for the software's canonical source repository. Typically absent
+in multi-product mode unless the vendor publishes a monorepo.</dd>
+<dt><tt>package_identifiers</tt> (object):</dt>
+<dd>In single-product mode: a map of package ecosystem names to the
+identifier used in that ecosystem. See <eref target="#package-identifiers">Section 4.4</eref>.
+SHOULD NOT be present in multi-product mode; use per-product
+<tt>package_identifiers</tt> in each product entry instead.</dd>
+<dt><tt>release_cycle_url</tt> (string):</dt>
+<dd>A URI for the vendor's official support lifecycle or release policy page.</dd>
+<dt><tt>last_updated</tt> (string):</dt>
+<dd>An ISO 8601 date string indicating when this resource was last reviewed
+or updated (e.g., <tt>&quot;2026-04-25&quot;</tt>). Consuming tools MAY use this field to
+decide whether to re-fetch the resource regardless of caching policy.</dd>
+<dt><tt>products</tt> (array):</dt>
+<dd>When present, indicates multi-product mode. An array of product entry
+objects as described in <eref target="#multi-product-resources">Section 4.5</eref>. When this field is
+present, consuming tools MUST use product entries for lifecycle lookups
+and SHOULD NOT use root-level <tt>name</tt> and <tt>versions</tt> for product matching.</dd>
+</dl>
+</section>
+
+<section anchor="version-entries"><name>Version Entries</name>
+<t>Each object in the <tt>versions</tt> array (whether at the root level in
+single-product mode, or within a product entry in multi-product mode)
+represents one version series and MUST contain the following fields:</t>
+
+<dl spacing="compact">
+<dt><tt>version</tt> (string, REQUIRED):</dt>
+<dd>The version series identifier. This MAY be a specific version number
+(<tt>&quot;3.2&quot;</tt>), a major version with wildcard (<tt>&quot;2.x&quot;</tt>), a named track
+(<tt>&quot;LTS 22.04&quot;</tt>), or any string that meaningfully identifies the series
+to the vendor's users. For firmware, this SHOULD be the firmware version
+string as displayed in the device's management interface.</dd>
+<dt><tt>status</tt> (string, REQUIRED):</dt>
+<dd>The current support status of this version series. MUST be one of the
+values defined in <eref target="#status-values">Section 4.3</eref>.</dd>
+</dl>
+<t>Each version entry MAY contain the following fields:</t>
+
+<dl spacing="compact">
+<dt><tt>release_date</tt> (string):</dt>
+<dd>An ISO 8601 date on which this version series reached general availability.</dd>
+<dt><tt>support_ends</tt> (string or null):</dt>
+<dd>An ISO 8601 date on which support for this version series is scheduled
+to end. A value of <tt>null</tt> indicates no currently planned end date.
+SHOULD be present for all version series where a planned end date is
+known.</dd>
+<dt><tt>eol_date</tt> (string):</dt>
+<dd>An ISO 8601 date on which this version series reached end-of-life. This
+field records a past event; <tt>support_ends</tt> records a future one.
+SHOULD be present when <tt>status</tt> is <tt>&quot;eol&quot;</tt> and the date is known.</dd>
+<dt><tt>lts</tt> (boolean):</dt>
+<dd><tt>true</tt> if this version series is designated as Long-Term Support.
+Defaults to <tt>false</tt> if absent.</dd>
+<dt><tt>notes</tt> (string):</dt>
+<dd>A human-readable note providing additional context about this version
+entry. Consuming tools MAY surface this to users but MUST NOT rely on
+its content for programmatic decisions.</dd>
+</dl>
+</section>
+
+<section anchor="status-values"><name>Status Values</name>
+<t>The <tt>status</tt> field MUST be one of the following values:</t>
+
+<dl spacing="compact">
+<dt><tt>&quot;active&quot;</tt>:</dt>
+<dd>The version series is fully supported. The vendor intends to issue
+bug fixes, security patches, and potentially new features.</dd>
+<dt><tt>&quot;lts&quot;</tt>:</dt>
+<dd>The version series is designated Long-Term Support. The vendor commits
+to issuing security patches (and possibly bug fixes) for an extended
+period.</dd>
+<dt><tt>&quot;security-only&quot;</tt>:</dt>
+<dd>The version series is no longer receiving general bug fixes or new
+features, but security vulnerabilities are still being patched.</dd>
+<dt><tt>&quot;eol&quot;</tt>:</dt>
+<dd>The version series has reached end-of-life. No further patches of any
+kind will be issued, including security patches.</dd>
+<dt><tt>&quot;unmaintained&quot;</tt>:</dt>
+<dd>The software project has been abandoned by its original maintainer.
+No patches are expected, but the project has not been formally
+declared end-of-life.</dd>
+</dl>
+<t>Additional status values MAY be defined in future revisions of this
+document. Consuming tools that encounter an unrecognized status value
+SHOULD treat it as equivalent to <tt>&quot;unknown&quot;</tt> and note the unrecognized
+value in any user-facing output.</t>
+</section>
+
+<section anchor="package-identifiers"><name>Package Identifiers</name>
+<t>The optional <tt>package_identifiers</tt> object maps package ecosystem names
+to the string identifier used in that ecosystem. Known ecosystem names
+include, but are not limited to:</t>
+<table>
+<thead>
+<tr>
+<th align="left">Key</th>
+<th align="left">Ecosystem</th>
+<th align="left">Example value</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td align="left"><tt>pypi</tt></td>
+<td align="left">Python Package Index</td>
+<td align="left"><tt>&quot;requests&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>npm</tt></td>
+<td align="left">npm registry</td>
+<td align="left"><tt>&quot;express&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>rubygems</tt></td>
+<td align="left">RubyGems</td>
+<td align="left"><tt>&quot;rails&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>cargo</tt></td>
+<td align="left">crates.io</td>
+<td align="left"><tt>&quot;tokio&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>nuget</tt></td>
+<td align="left">NuGet</td>
+<td align="left"><tt>&quot;Newtonsoft.Json&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>maven</tt></td>
+<td align="left">Maven Central</td>
+<td align="left"><tt>&quot;org.apache:commons&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>apt</tt></td>
+<td align="left">Debian/Ubuntu APT</td>
+<td align="left"><tt>&quot;openssl&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>brew</tt></td>
+<td align="left">Homebrew</td>
+<td align="left"><tt>&quot;openssl&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>docker</tt></td>
+<td align="left">Docker Hub</td>
+<td align="left"><tt>&quot;library/nginx&quot;</tt></td>
+</tr>
+
+<tr>
+<td align="left"><tt>github</tt></td>
+<td align="left">GitHub repository</td>
+<td align="left"><tt>&quot;owner/repo&quot;</tt></td>
+</tr>
+</tbody>
+</table><t>A value of <tt>null</tt> for a given key indicates the software is not
+distributed through that ecosystem.</t>
+</section>
+
+<section anchor="multi-product-resources"><name>Multi-Product Resources</name>
+
+<section anchor="overview"><name>Overview</name>
+<t>Many vendors ship multiple distinct products or hardware SKUs under a
+single domain. A network equipment manufacturer may offer dozens of router
+models, switches, wireless access points, and security appliances — each
+with its own firmware version history and support lifecycle. An operating
+system vendor may ship a desktop edition, server edition, and embedded
+edition, each with independent support windows.</t>
+<t>The <tt>products</tt> array at the root of the resource allows a single
+<tt>software-status.json</tt> endpoint to serve lifecycle declarations for an
+entire product catalog. This eliminates the need for per-product endpoints
+and allows consuming tools to retrieve all lifecycle data for a vendor in
+a single HTTP request.</t>
+</section>
+
+<section anchor="product-entries"><name>Product Entries</name>
+<t>Each object in the <tt>products</tt> array represents one product or SKU and
+MUST contain the following fields:</t>
+
+<dl spacing="compact">
+<dt><tt>product_id</tt> (string, REQUIRED):</dt>
+<dd>A stable, machine-readable identifier for this product, unique within
+this vendor's <tt>products</tt> array. SHOULD use only ASCII alphanumeric
+characters, hyphens, and underscores (e.g., <tt>&quot;UDM-PRO&quot;</tt>, <tt>&quot;nginx&quot;</tt>,
+<tt>&quot;RT-AX88U&quot;</tt>). MUST NOT change between revisions of the
+<tt>software-status.json</tt> resource once published; consuming tools MAY
+use this value as a stable key for caching and database storage.</dd>
+<dt><tt>name</tt> (string, REQUIRED):</dt>
+<dd>The human-readable name of this product or SKU.</dd>
+<dt><tt>versions</tt> (array, REQUIRED):</dt>
+<dd>An array of version entry objects as described in <eref target="#version-entries">Section 4.2</eref>.
+MUST contain at least one entry. SHOULD include all version series for
+which the vendor has a defined support position.</dd>
+</dl>
+<t>Each product entry MAY contain the following fields:</t>
+
+<dl spacing="compact">
+<dt><tt>sku</tt> (string):</dt>
+<dd>The vendor's official SKU or model number for this product (e.g.,
+<tt>&quot;UDM-PRO&quot;</tt>, <tt>&quot;EAP670&quot;</tt>). MAY differ from <tt>product_id</tt> if the
+<tt>product_id</tt> uses a normalized form. Consuming tools MAY use this
+field for fuzzy matching against hardware model strings discovered
+during device inventory.</dd>
+<dt><tt>product_type</tt> (string):</dt>
+<dd>The type of product. SHOULD be one of the following values:
+<tt>&quot;software&quot;</tt> (a standalone software application),
+<tt>&quot;firmware&quot;</tt> (software embedded in a hardware device),
+<tt>&quot;os&quot;</tt> (a general-purpose operating system or OS distribution),
+<tt>&quot;library&quot;</tt> (a software library or SDK),
+<tt>&quot;container&quot;</tt> (a container image or OCI artifact),
+<tt>&quot;hardware-firmware&quot;</tt> (a hardware SKU whose primary versioned
+artifact is its firmware).
+Additional values MAY be used; consuming tools that encounter
+an unrecognized value SHOULD treat it as <tt>&quot;software&quot;</tt>.</dd>
+<dt><tt>platform</tt> (string):</dt>
+<dd>The hardware platform or CPU architecture for which this product is
+built (e.g., <tt>&quot;arm64&quot;</tt>, <tt>&quot;x86_64&quot;</tt>, <tt>&quot;mips&quot;</tt>). For products that
+support multiple architectures, this field MAY be omitted or set to
+a comma-separated list.</dd>
+<dt><tt>discontinued</tt> (boolean):</dt>
+<dd><tt>true</tt> if the hardware product has been discontinued by the vendor
+(i.e., is no longer manufactured or sold). Defaults to <tt>false</tt> if
+absent. A discontinued product MAY still be in an <tt>&quot;active&quot;</tt> or
+<tt>&quot;security-only&quot;</tt> support state for its firmware — discontinuation
+of hardware manufacturing does not imply end-of-life for security
+patches. Consuming tools SHOULD surface the <tt>discontinued</tt> flag
+alongside the firmware support status to give operators a complete
+picture.</dd>
+<dt><tt>homepage</tt> (string):</dt>
+<dd>A URI for this product's primary webpage.</dd>
+<dt><tt>release_cycle_url</tt> (string):</dt>
+<dd>A URI for the support lifecycle policy specific to this product.
+When present, takes precedence over the root-level
+<tt>release_cycle_url</tt> for this product.</dd>
+<dt><tt>package_identifiers</tt> (object):</dt>
+<dd>A map of package ecosystem names to identifiers, as defined in
+<eref target="#package-identifiers">Section 4.4</eref>. For firmware products, the <tt>github</tt> key MAY
+reference the vendor's open-source firmware repository if
+applicable.</dd>
+<dt><tt>notes</tt> (string):</dt>
+<dd>A human-readable note about this product. Consuming tools MAY
+surface this to users but MUST NOT rely on its content for
+programmatic decisions.</dd>
+</dl>
+</section>
+
+<section anchor="product-discovery"><name>Product Discovery</name>
+<t>When a consuming tool needs to determine the lifecycle status of a specific
+product from a multi-product resource, it SHOULD use the following matching
+strategy, in order of preference:</t>
+
+<ol spacing="compact">
+<li>Exact match on <tt>product_id</tt> (case-insensitive)</li>
+<li>Exact match on <tt>sku</tt> (case-insensitive)</li>
+<li>Exact match on <tt>name</tt> (case-insensitive)</li>
+<li>Partial/fuzzy match on <tt>name</tt> or <tt>sku</tt> (implementation-defined)</li>
+</ol>
+<t>When no match is found, consuming tools MUST treat the product's lifecycle
+status as unknown and MUST NOT infer EOL status from the absence of a
+matching entry.</t>
+<t>Consuming tools SHOULD expose matched <tt>product_id</tt> values in their output
+to allow operators to verify that the correct product entry was selected,
+particularly when fuzzy matching was used.</t>
+</section>
+
+<section anchor="large-catalogs"><name>Large Catalogs</name>
+<t>Vendors with very large product catalogs (hundreds or thousands of SKUs)
+may find it impractical to serve the complete catalog in a single JSON
+resource. For such vendors, this document does not prescribe a pagination
+mechanism. However, the following approaches are RECOMMENDED:</t>
+
+<ul>
+<li><t>Serve the complete catalog as a single resource and rely on HTTP
+compression (gzip, brotli) to manage response size. A catalog of
+500 SKUs with three version entries each is typically well under
+500 KB uncompressed and under 50 KB compressed.</t>
+</li>
+<li><t>Use <tt>last_updated</tt> at both the root level and per-product entry level
+to allow consuming tools to detect staleness without re-fetching the
+complete resource.</t>
+</li>
+<li><t>Include an <tt>ETag</tt> HTTP response header to enable conditional GET
+requests.</t>
+</li>
+</ul>
+<t>Future revisions of this document MAY define a pagination or linking
+mechanism for extremely large catalogs. Consuming tools SHOULD be prepared
+to handle resources of arbitrary size.</t>
+</section>
+</section>
+</section>
+
+<section anchor="processing-rules-for-consuming-tools"><name>Processing Rules for Consuming Tools</name>
+
+<section anchor="discovery"><name>Discovery</name>
+<t>To retrieve lifecycle status for software associated with a known domain,
+a consuming tool SHOULD:</t>
+
+<ol spacing="compact">
+<li>Construct the URI <tt>https://{domain}/.well-known/software-status.json</tt></li>
+<li>Issue an HTTP GET request with an <tt>Accept: application/json</tt> header</li>
+<li>Treat a 2xx response containing valid JSON as a successful retrieval</li>
+<li>Treat a 404 or 410 response as &quot;no declaration&quot; and fall back</li>
+<li>Treat other error responses (5xx, timeouts) as transient failures;
+retry with exponential backoff before treating as unavailable</li>
+<li>Check for the presence of a <tt>products</tt> field to determine whether
+to use single-product or multi-product processing (see
+<eref target="#multi-product-resources">Section 4.5</eref>)</li>
+</ol>
+</section>
+
+<section anchor="version-matching"><name>Version Matching</name>
+<t>When matching an installed version against the <tt>versions</tt> array (whether
+at the root level or within a product entry), consuming tools SHOULD use
+the following logic:</t>
+
+<ol spacing="compact">
+<li>Attempt an exact match on the <tt>version</tt> field</li>
+<li>If no exact match, attempt a prefix match: an installed version of
+<tt>3.2.7</tt> matches a version series of <tt>3.2</tt></li>
+<li>If no prefix match, attempt a major-version match: <tt>3.2.7</tt> matches
+<tt>3.x</tt></li>
+<li>If no match is found, treat the version's lifecycle status as unknown</li>
+</ol>
+<t>When multiple entries match, consuming tools SHOULD prefer the most
+specific match (exact &gt; prefix &gt; major-version).</t>
+</section>
+
+<section anchor="conflict-resolution"><name>Conflict Resolution</name>
+<t>When a consuming tool has lifecycle data for a product from multiple
+sources (e.g., a third-party database and a <tt>software-status.json</tt>
+resource), data retrieved from <tt>software-status.json</tt> SHOULD be treated
+as authoritative and given precedence, as it represents a declaration
+by the party responsible for the software's support policy.</t>
+</section>
+</section>
+
+<section anchor="security-considerations"><name>Security Considerations</name>
+
+<section anchor="authenticity"><name>Authenticity</name>
+<t>The <tt>software-status.json</tt> resource is served over HTTPS and inherits
+the authenticity guarantees of the TLS connection. A consuming tool
+that retrieves the resource over HTTPS from the vendor's canonical domain
+can be reasonably confident that the content reflects the vendor's intent.</t>
+<t>Consuming tools MUST NOT retrieve this resource over plain HTTP and treat
+it as authoritative. Consuming tools SHOULD validate that the hostname of
+the retrieval URI matches the domain associated with the software in
+question.</t>
+</section>
+
+<section anchor="denial-of-service"><name>Denial of Service</name>
+<t>A consuming tool that retrieves <tt>software-status.json</tt> resources at scale
+SHOULD implement rate limiting, caching, and exponential backoff to avoid
+placing undue load on vendor infrastructure.</t>
+<t>For multi-product resources, a consuming tool that needs lifecycle status
+for multiple products from the same vendor SHOULD retrieve the resource
+once and process all required products from the cached response, rather
+than issuing repeated requests.</t>
+</section>
+
+<section anchor="misleading-declarations"><name>Misleading Declarations</name>
+<t>This mechanism relies on vendors publishing accurate information. A vendor
+could theoretically publish a <tt>software-status.json</tt> that misrepresents
+the support status of a product — for example, declaring an EOL product
+as <tt>&quot;active&quot;</tt> to discourage users from migrating, or omitting a product
+from the <tt>products</tt> array to avoid acknowledging its EOL status. Consuming
+tools SHOULD note the source of lifecycle determinations in user-facing
+output so that users can evaluate the claim in context.</t>
+<t>Consuming tools that maintain independent lifecycle databases MAY flag
+discrepancies between their own records and a vendor-published
+<tt>software-status.json</tt> for human review.</t>
+<t>The absence of a product from a vendor's <tt>products</tt> array MUST NOT be
+interpreted as confirmation that the product is end-of-life or unsupported.
+It indicates only that the vendor has not published a declaration for that
+product via this mechanism.</t>
+</section>
+
+<section anchor="privacy"><name>Privacy</name>
+<t>Retrieving <tt>software-status.json</tt> from a vendor's domain may reveal to
+that vendor that a consuming tool is checking lifecycle status, potentially
+disclosing information about what software is deployed in an organization.
+Consuming tools operating in sensitive environments SHOULD consider
+whether direct retrieval is appropriate or whether a privacy-preserving
+intermediary (such as a shared cache or mirroring service) should be used.</t>
+<t>For multi-product resources, a single retrieval reveals interest in the
+vendor's products generally, but does not disclose which specific SKU or
+version is deployed. This is a privacy improvement over per-product endpoints,
+which would reveal the specific product being queried.</t>
+</section>
+</section>
+
+<section anchor="iana-considerations"><name>IANA Considerations</name>
+
+<section anchor="well-known-uri-registration"><name>Well-Known URI Registration</name>
+<t>IANA is requested to register the following Well-Known URI in the
+&quot;Well-Known URIs&quot; registry established by <xref target="RFC8615"></xref>:</t>
+
+<dl spacing="compact">
+<dt>URI suffix:</dt>
+<dd><tt>software-status.json</tt></dd>
+<dt>Change controller:</dt>
+<dd>IETF</dd>
+<dt>Specification document(s):</dt>
+<dd>This document</dd>
+<dt>Related information:</dt>
+<dd>This URI returns a JSON document describing the software lifecycle
+status for products associated with the host. The format is defined
+in <eref target="#the-software-statusjson-schema">Section 4</eref> of this document. The resource MAY describe a
+single product or a catalog of multiple products or hardware SKUs.</dd>
+</dl>
+</section>
+</section>
+
+</middle>
+
+<back>
+<references><name>References</name>
+<references><name>Normative References</name>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml"/>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml"/>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8259.xml"/>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8615.xml"/>
+</references>
+<references><name>Informative References</name>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.9116.xml"/>
+<xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8520.xml"/>
+</references>
+</references>
+
+<section anchor="examples"><name>Examples</name>
+
+<section anchor="minimal-resource"><name>Minimal Single-Product Resource</name>
+
+<sourcecode type="json"><![CDATA[{
+  "schema_version": "1.0",
+  "specification": "https://datatracker.ietf.org/doc/draft-mcconnell-software-status-wellknown/",
+  "name": "ExampleDB",
+  "vendor": "Example Software Inc.",
+  "versions": [
+    {
+      "version": "5.0",
+      "status": "active",
+      "support_ends": null
+    }
+  ]
+}
+]]></sourcecode>
+</section>
+
+<section anchor="multi-version-resource-with-eol-history"><name>Multi-Version Single-Product Resource with EOL History</name>
+
+<sourcecode type="json"><![CDATA[{
+  "schema_version": "1.0",
+  "name": "ExampleDB",
+  "vendor": "Example Software Inc.",
+  "homepage": "https://example.com/db",
+  "package_identifiers": {
+    "apt": "exampledb-server",
+    "docker": "exampleinc/exampledb"
+  },
+  "versions": [
+    {
+      "version": "5.0",
+      "release_date": "2025-03-01",
+      "status": "active",
+      "support_ends": null,
+      "lts": false
+    },
+    {
+      "version": "4.2",
+      "release_date": "2023-06-15",
+      "status": "lts",
+      "support_ends": "2027-06-15",
+      "lts": true,
+      "notes": "LTS release — security and critical bug fixes through June 2027"
+    },
+    {
+      "version": "4.0",
+      "release_date": "2022-01-10",
+      "status": "security-only",
+      "support_ends": "2026-01-10",
+      "lts": false
+    },
+    {
+      "version": "3.x",
+      "release_date": "2019-04-01",
+      "status": "eol",
+      "eol_date": "2024-04-01",
+      "support_ends": "2024-04-01",
+      "lts": false
+    }
+  ],
+  "release_cycle_url": "https://example.com/support-policy",
+  "last_updated": "2026-04-25"
+}
+]]></sourcecode>
+</section>
+
+<section anchor="multi-product-network-vendor"><name>Multi-Product Resource: Network Equipment Vendor</name>
+<t>The following example illustrates a network equipment vendor publishing
+lifecycle status for multiple hardware SKUs from a single endpoint. This
+pattern is appropriate for vendors such as router, switch, or wireless
+access point manufacturers that ship dozens to hundreds of distinct
+hardware models, each with its own firmware version history.</t>
+<t>Note the use of <tt>product_type: "hardware-firmware"</tt> and the <tt>discontinued</tt>
+flag, which allows consuming tools to distinguish between hardware that is
+no longer sold and firmware that is no longer patched — two related but
+distinct conditions that affect operator decisions differently.</t>
+
+<sourcecode type="json"><![CDATA[{
+  "schema_version": "1.0",
+  "specification": "https://datatracker.ietf.org/doc/draft-mcconnell-software-status-wellknown/",
+  "vendor": "Example Networks Inc.",
+  "homepage": "https://network-vendor.example.com",
+  "release_cycle_url": "https://network-vendor.example.com/end-of-life",
+  "last_updated": "2026-04-25",
+  "products": [
+    {
+      "product_id": "ENI-GW-PRO",
+      "name": "Example Gateway Pro",
+      "sku": "ENI-GW-PRO",
+      "product_type": "hardware-firmware",
+      "platform": "arm64",
+      "discontinued": false,
+      "homepage": "https://network-vendor.example.com/products/gw-pro",
+      "versions": [
+        {
+          "version": "5.0",
+          "release_date": "2025-09-01",
+          "status": "active",
+          "support_ends": null,
+          "notes": "Current production firmware"
+        },
+        {
+          "version": "4.x",
+          "release_date": "2023-03-15",
+          "status": "security-only",
+          "support_ends": "2026-09-01"
+        },
+        {
+          "version": "3.x",
+          "release_date": "2021-01-10",
+          "status": "eol",
+          "eol_date": "2025-01-10"
+        }
+      ]
+    },
+    {
+      "product_id": "ENI-GW-SE",
+      "name": "Example Gateway SE",
+      "sku": "ENI-GW-SE",
+      "product_type": "hardware-firmware",
+      "platform": "arm64",
+      "discontinued": false,
+      "versions": [
+        {
+          "version": "5.0",
+          "release_date": "2025-09-01",
+          "status": "active",
+          "support_ends": null
+        },
+        {
+          "version": "4.x",
+          "release_date": "2023-06-01",
+          "status": "security-only",
+          "support_ends": "2026-09-01"
+        }
+      ]
+    },
+    {
+      "product_id": "ENI-AP-AX",
+      "name": "Example Access Point AX",
+      "sku": "ENI-AP-AX",
+      "product_type": "hardware-firmware",
+      "platform": "mips",
+      "discontinued": true,
+      "notes": "Hardware discontinued March 2025; firmware security patches continue through 2027",
+      "versions": [
+        {
+          "version": "6.x",
+          "release_date": "2022-11-01",
+          "status": "security-only",
+          "support_ends": "2027-03-01"
+        },
+        {
+          "version": "5.x",
+          "release_date": "2020-06-01",
+          "status": "eol",
+          "eol_date": "2024-06-01"
+        }
+      ]
+    },
+    {
+      "product_id": "ENI-SW-24",
+      "name": "Example Switch 24-Port",
+      "sku": "ENI-SW-24",
+      "product_type": "hardware-firmware",
+      "platform": "arm32",
+      "discontinued": false,
+      "versions": [
+        {
+          "version": "3.x",
+          "release_date": "2024-02-01",
+          "status": "active",
+          "support_ends": null
+        }
+      ]
+    }
+  ]
+}
+]]></sourcecode>
+</section>
+</section>
+
+<section anchor="appendix-b"><name>Companion Convention: Repository-Hosted Lifecycle Status</name>
+<t>This appendix describes a companion convention for software projects
+hosted on version-control platforms (such as GitHub, GitLab, or Gitea).
+This convention is informative and does not define a standards-track
+mechanism; it is documented here because it uses the same schema as the
+Well-Known URI defined in this document and is intended to be consumed
+by the same tools.</t>
+
+<section anchor="motivation"><name>Motivation</name>
+<t>Many software projects are distributed as source code and do not have a
+corresponding web domain from which a Well-Known URI could be served.
+Open-source libraries, developer tools, and components published to
+package registries often have a repository URL as their primary identity,
+not a product domain.</t>
+<t>For these projects, a file committed to a predictable location within the
+repository serves the same purpose as the Well-Known URI.</t>
+</section>
+
+<section anchor="location"><name>Location</name>
+<t>The resource SHOULD be placed at:</t>
+
+<artwork><![CDATA[{repository-root}/.github/software-status.json
+]]></artwork>
+<t>The <tt>.github/</tt> directory is an established convention on major version-
+control platforms for repository-level metadata. This location is
+intentionally analogous to <tt>.github/SECURITY.md</tt>, <tt>.github/FUNDING.yml</tt>,
+and similar files.</t>
+</section>
+
+<section anchor="discovery-1"><name>Discovery</name>
+<t>Consuming tools that resolve a software package to a GitHub-hosted
+repository SHOULD check for the presence of this file at the raw content
+URL:</t>
+
+<artwork><![CDATA[https://raw.githubusercontent.com/{owner}/{repo}/HEAD/.github/software-status.json
+]]></artwork>
+<t>A 404 response MUST be treated as &quot;no declaration available&quot;. A 200
+response with valid JSON MUST be processed according to the schema
+defined in <eref target="#the-software-statusjson-schema">Section 4</eref>.</t>
+</section>
+
+<section anchor="schema"><name>Schema</name>
+<t>The <tt>.github/software-status.json</tt> resource uses the same JSON schema
+as defined in <eref target="#the-software-statusjson-schema">Section 4</eref>, with one addition:
+the <tt>source</tt> field at the root object SHOULD be set to the canonical
+repository URI. The <tt>products</tt> array MAY be used in repository-hosted
+resources for projects that maintain multiple independently versioned
+components within a single repository (monorepos).</t>
+</section>
+
+<section anchor="precedence"><name>Precedence</name>
+<t>When a project has both a Well-Known URI resource and a repository-hosted
+resource, consuming tools SHOULD prefer the Well-Known URI, as it is
+served from infrastructure explicitly controlled by the vendor and subject
+to the HTTPS authenticity guarantees described in <eref target="#security-considerations">Section 6</eref>.</t>
+</section>
+
+<section anchor="example"><name>Example</name>
+
+<sourcecode type="json"><![CDATA[{
+  "schema_version": "1.0",
+  "name": "example-lib",
+  "vendor": "Example Org",
+  "source": "https://github.com/example/example-lib",
+  "package_identifiers": {
+    "pypi": "example-lib",
+    "npm": null
+  },
+  "versions": [
+    {
+      "version": "2.0",
+      "release_date": "2025-01-01",
+      "status": "active",
+      "support_ends": null
+    },
+    {
+      "version": "1.x",
+      "release_date": "2022-06-01",
+      "status": "eol",
+      "eol_date": "2025-06-01"
+    }
+  ],
+  "last_updated": "2026-04-25"
+}
+]]></sourcecode>
+</section>
+</section>
+
+<section anchor="related-work"><name>Related Work</name>
+<t><strong>endoflife.date</strong>: A community-maintained database of software lifecycle
+information, available at <tt>https://endoflife.date</tt>. Provides an API for
+querying EOL dates for approximately 400 products. This proposal is
+complementary: endoflife.date is a centralized catalog; <tt>software-status.json</tt>
+is a decentralized, vendor-authoritative mechanism. Consuming tools should
+use both.</t>
+<t><strong>security.txt</strong> (<xref target="RFC9116"></xref>): Defines a Well-Known URI (<tt>/.well-known/
+security.txt</tt>) at which organizations publish security contact information.
+This proposal follows the same pattern for lifecycle data.</t>
+<t><strong>Manufacturer Usage Description (MUD)</strong> (<xref target="RFC8520"></xref>): Defines a mechanism
+by which IoT devices can describe their intended network behavior to network
+operators, via a MUD URL served from the device or supplied out-of-band.
+The multi-product schema defined in this document is complementary to MUD:
+MUD describes what network behaviors a device should exhibit; <tt>software-status.json</tt>
+describes the lifecycle status of the software and firmware running on that
+device. A MUD URL (<tt>ietf-mud:mud-url</tt>) and a <tt>software-status.json</tt> endpoint
+may be published by the same vendor domain. Future work may explore
+referencing a product's <tt>software-status.json</tt> entry from within a MUD file
+to allow network management systems to correlate device identity, network
+policy, and firmware lifecycle status in a single workflow.</t>
+<t><strong>Software Bill of Materials (SBOM)</strong>: Formats including CycloneDX and SPDX
+describe the components present in a software artifact. SBOMs identify
+<em>what</em> is present; <tt>software-status.json</tt> declares the lifecycle status of
+<em>what</em> is present. The two are complementary: an SBOM tool that resolves
+component origins can use <tt>software-status.json</tt> to annotate each component
+with its current support status. For firmware devices, an SBOM that
+enumerates embedded open-source components combined with per-component
+<tt>software-status.json</tt> lookups provides the most complete picture of a
+device's security posture — a pattern directly applicable to network
+equipment with multiple embedded OSS components (e.g., Linux kernel,
+OpenSSL, curl, dnsmasq) whose lifecycle status may differ from the
+firmware version's overall support status.</t>
+<t><strong>NIST Secure Software Development Framework (SSDF)</strong>: The SSDF (NIST SP
+800-218) recommends that organizations track the EOL status of software
+components they depend on. This proposal provides a standardized data source
+for that activity.</t>
+<t><strong>SCITT (Supply Chain Integrity, Transparency and Trust)</strong>: The IETF SCITT
+working group is developing a framework for supply chain transparency using
+signed statements and transparent registries. The <tt>software-status.json</tt>
+mechanism is complementary: it provides a lightweight, vendor-self-published
+lifecycle declaration that does not require a transparency registry
+infrastructure, while SCITT provides stronger integrity guarantees through
+cryptographic signatures and append-only logs. Future work may explore
+a SCITT-signed envelope for <tt>software-status.json</tt> content to provide
+non-repudiation and tamper evidence for vendor lifecycle declarations.</t>
+</section>
+
+<section anchor="acknowledgements"><name>Acknowledgements</name>
+<t>The author thanks the maintainers of endoflife.date for their sustained
+effort in curating software lifecycle data, which demonstrated both the
+value of this information and the limitations of a purely centralized
+approach. The design of this proposal was informed by operational experience
+building S3C-Tool (<eref target="https://askmcconnell.com/s3c/">https://askmcconnell.com/s3c/</eref>), a software supply chain
+security tool that performs EOL and CVE assessment at scale across a wide
+range of software inventories including firmware-based network devices.</t>
+<t>The author thanks members of the SCITT mailing list for feedback on -01,
+particularly on the topics of multi-product vendor schema design, IoT and
+firmware applicability, and the relationship between this mechanism and
+existing IETF work including <xref target="RFC8520"></xref>.</t>
+</section>
+
+</back>
+
+</rfc>

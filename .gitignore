@@ -30,6 +30,13 @@ logs/
 .deploy.env
 deploy_key*
 
+# Claude Code local workspace settings
+.claude/
+
+# Local notes — never commit
+LOCAL_TODO.md
+LOCAL_NOTES.md
+
 # macOS
 .DS_Store
 .mib2c-updaterc

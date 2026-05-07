@@ -70,6 +70,7 @@ export default function ScansPage() {
           <table>
             <thead>
               <tr>
+                <th>Machine</th>
                 <th>File</th>
                 <th>Status</th>
                 <th>Rows</th>
@@ -83,14 +84,14 @@ export default function ScansPage() {
               {jobs.map(job => (
                 <tr key={job.uuid} style={{ cursor: job.status === 'complete' ? 'pointer' : 'default' }}
                   onClick={() => job.status === 'complete' && navigate(`/results/${job.uuid}`)}>
-                  <td style={{ fontWeight: 500, maxWidth: 260 }}>
-                    <span style={{ wordBreak: 'break-all' }}>{job.filename || '—'}</span>
+                  <td style={{ fontWeight: job.machine_label ? 600 : 400, color: job.machine_label ? 'var(--text)' : 'var(--text-muted)', maxWidth: 180 }}>
+                    <span style={{ wordBreak: 'break-all' }}>{job.machine_label || '—'}</span>
                   </td>
                   <td>
-                    {job.status === 'complete'  && <StatusBadge status="supported" label="Complete" />}
-                    {job.status === 'pending'   && <StatusBadge status="unknown"   label="Pending"  />}
-                    {job.status === 'processing'&& <StatusBadge status="lts"       label="Processing"/>}
-                    {job.status === 'failed'    && <StatusBadge status="eol"       label="Failed"   />}
+                    <span style={{ wordBreak: 'break-all', fontSize: '0.8rem', color: 'var(--text-muted)' }}>{job.filename || '—'}</span>
+                  </td>
+                  <td>
+                    <StatusBadge status={job.status} />
                   </td>
                   <td className="mono">{(job.row_count ?? 0).toLocaleString()}</td>
                   <td className="mono" style={{ color: job.eol_count > 0 ? 'var(--eol)' : 'var(--text-muted)' }}>

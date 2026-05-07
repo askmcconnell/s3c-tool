@@ -15,9 +15,8 @@ export default function DocsPage() {
         <div className="card-title">📦 Download Scanners</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           {[
-            { name: 'macOS Scanner',   file: 's3c_scan_mac.py',      icon: '🍎', cmd: 'python3 s3c_scan_mac.py --quick' },
-            { name: 'Linux Scanner',   file: 's3c_scan_linux.py',    icon: '🐧', cmd: 'python3 s3c_scan_linux.py --quick' },
-            { name: 'Windows Scanner', file: 's3c_scan_windows.ps1', icon: '🪟', cmd: '.\\s3c_scan_windows.ps1 -Quick' },
+            { name: 'macOS Scanner',   file: 's3c_scan_mac.py',   icon: '🍎', cmd: 'python3 s3c_scan_mac.py --quick' },
+            { name: 'Linux Scanner',   file: 's3c_scan_linux.py', icon: '🐧', cmd: 'python3 s3c_scan_linux.py --quick' },
           ].map(({ name, file, icon, cmd }) => (
             <div key={file} style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 16 }}>
               <div style={{ fontSize: '1.5rem', marginBottom: 8 }}>{icon}</div>
@@ -25,15 +24,32 @@ export default function DocsPage() {
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 12 }}>
                 {code(file)}
               </div>
-              <a
-                href={`https://askmcconnell.com/s3c/scanners/${file}`}
-                className="btn btn-ghost btn-sm"
-                download
-              >
+              <a href={`https://askmcconnell.com/s3c/scanners/${file}`} className="btn btn-ghost btn-sm" download>
                 ⬇ Download
               </a>
             </div>
           ))}
+
+          {/* Windows — two-file package */}
+          <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 16 }}>
+            <div style={{ fontSize: '1.5rem', marginBottom: 8 }}>🪟</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Windows Scanner</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4 }}>
+              Requires two files in the same folder:
+            </div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.8 }}>
+              {code('Run_S3C_Scanner.bat')} — launcher<br />
+              {code('s3c_scan_windows.ps1')} — scanner
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <a href="https://askmcconnell.com/s3c/scanners/Run_S3C_Scanner.bat" className="btn btn-ghost btn-sm" download>
+                ⬇ Download Launcher (.bat)
+              </a>
+              <a href="https://askmcconnell.com/s3c/scanners/s3c_scan_windows.ps1" className="btn btn-ghost btn-sm" download>
+                ⬇ Download Scanner (.ps1)
+              </a>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -43,14 +59,17 @@ export default function DocsPage() {
         <ol style={{ paddingLeft: 20, lineHeight: 2.2, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
           <li>Download the scanner for your platform above</li>
           <li>
-            <strong>macOS/Linux</strong>: Requires Python 3.8+ (pre-installed on macOS and most Linux distros) &nbsp;·&nbsp;
-            <strong>Windows</strong>: Requires PowerShell (pre-installed on Windows 10+)
+            <strong>macOS / Linux</strong>: Python 3.8+ required (pre-installed on macOS and most Linux distros)<br />
+            <strong>Windows</strong>: Download both {code('Run_S3C_Scanner.bat')} and {code('s3c_scan_windows.ps1')} — save to the same folder
           </li>
           <li>
-            Run: {code('python3 s3c_scan_mac.py --quick')} (macOS/Linux)
-            &nbsp;or&nbsp; {code('.\\s3c_scan_windows.ps1 -Quick')} (Windows)
+            <strong>macOS / Linux</strong>: {code('python3 s3c_scan_mac.py --quick')} or {code('python3 s3c_scan_linux.py --quick')}<br />
+            <strong>Windows</strong>: Double-click {code('Run_S3C_Scanner.bat')} — a console window opens, runs the scan, then saves your CSV to the Desktop
+            <span style={{ display: 'block', fontSize: '0.8rem', marginTop: 4, color: 'var(--text-dim)' }}>
+              ⚠ Do not run the .ps1 directly from cmd.exe — Windows execution policy will silently block it. Use the .bat launcher.
+            </span>
             <span style={{ display: 'block', fontSize: '0.8rem', marginTop: 2 }}>
-              Output: {code('s3c_inventory_[platform]_YYYY-MM-DD.csv')}
+              Output: {code('s3c_inventory_[platform]_YYYY-MM-DD.csv')} on your Desktop
             </span>
           </li>
           <li>Log in and upload the CSV on the <a href="/s3c/">Upload page</a></li>
@@ -59,6 +78,91 @@ export default function DocsPage() {
         <div className="alert alert-info mt-16" style={{ marginBottom: 0 }}>
           The <strong>--quick</strong> flag scans apps and CLI tools only (~30 seconds).
           Full scan (without flag) includes bundled frameworks and libraries (~2–5 minutes).
+        </div>
+      </div>
+
+      {/* Enterprise / Fleet Deployment */}
+      <div className="card mb-24" style={{ borderColor: 'var(--accent)', borderWidth: 1, borderStyle: 'solid' }}>
+        <div className="card-title">🏢 Enterprise & Fleet Deployment</div>
+        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: 20 }}>
+          Deploying across 10–100+ machines via a central management system (SCCM, Intune, Ansible, Puppet, Salt)?
+          All three scanners support headless, fully automated operation with a single API token.
+        </p>
+
+        {/* How it works */}
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>How it works</div>
+        <ol style={{ paddingLeft: 20, lineHeight: 2.2, color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: 20 }}>
+          <li>Your management system pushes the scanner + a deployment command to each machine</li>
+          <li>Each machine scans itself, auto-uploads the CSV, and logs its Job UUID locally</li>
+          <li>All reports appear in your <strong>My Scans</strong> page labeled by machine name</li>
+          <li>Sort by EOL count to prioritize which machines need attention first</li>
+        </ol>
+
+        {/* Commands */}
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>Deployment commands</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+          {[
+            ['🐧 Linux (push via Ansible / Salt / SSH)', 'bash',
+             'sudo python3 s3c_scan_linux.py --autoupload --token YOUR_TOKEN --label "PROD-WEB-01"'],
+            ['🪟 Windows (push via SCCM / Intune / GPO)', 'powershell',
+             '.\\s3c_scan_windows.ps1 -AutoUpload -Token "YOUR_TOKEN" -Label "PROD-WIN-47"'],
+            ['🍎 macOS (push via Jamf / Munki)', 'bash',
+             'python3 s3c_scan_mac.py --autoupload --token YOUR_TOKEN --label "MAC-EXEC-03"'],
+          ].map(([title, , cmd]) => (
+            <div key={title}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
+              <pre style={{ margin: 0, background: 'var(--bg-input)', borderRadius: 'var(--radius)', padding: '10px 14px', fontSize: '0.8rem', color: 'var(--text)', overflowX: 'auto', lineHeight: 1.5 }}>{cmd}</pre>
+            </div>
+          ))}
+        </div>
+
+        {/* Flags reference */}
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>Auto-upload flags</div>
+        <div className="table-wrap" style={{ marginBottom: 20 }}>
+          <table>
+            <thead>
+              <tr><th>Flag (Linux/Mac)</th><th>Flag (Windows)</th><th>Required</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+              {[
+                ['--autoupload', '-AutoUpload', 'Yes', 'Upload CSV automatically after scan completes'],
+                ['--token YOUR_TOKEN', '-Token "YOUR_TOKEN"', 'Yes', 'Your S3C-Tool API bearer token'],
+                ['--label "MACHINE-01"', '-Label "MACHINE-01"', 'No', 'Human-readable label shown in My Scans. Defaults to hostname.'],
+                ['--quick', '-Quick', 'No', 'Faster scan — packages & CLI only, skips deep file scan'],
+              ].map(([lm, win, req, desc]) => (
+                <tr key={lm}>
+                  <td>{code(lm)}</td>
+                  <td>{code(win)}</td>
+                  <td style={{ textAlign: 'center', color: req === 'Yes' ? 'var(--eol)' : 'var(--text-dim)' }}>{req}</td>
+                  <td className="muted" style={{ fontSize: '0.8rem' }}>{desc}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pre-deployment checklist */}
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>Pre-deployment checklist</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+          {[
+            ['Outbound HTTPS', 'Each machine needs outbound access to askmcconnell.com (port 443). Check firewall and proxy rules.'],
+            ['Run as admin', 'Linux/Mac: run with sudo for full package inventory. Windows: run as Administrator.'],
+            ['Python 3.8+', 'Required for Linux and Mac scanners. Pre-installed on most modern distros and macOS.'],
+            ['One token, all machines', 'A single contributor token covers unlimited uploads. All machines report into one account.'],
+            ['Row limit', 'Max 5,000 rows / 2 MB per upload. Servers with extremely large package sets may need --quick mode.'],
+            ['Result log', 'Each machine writes its Job UUID to s3c_result.log in the scanner directory — useful for automated collection.'],
+            ['Viewing reports', 'Log into My Scans — all machines appear in one table, labeled, sortable by EOL count.'],
+          ].map(([label, desc]) => (
+            <div key={label} style={{ display: 'flex', gap: 10 }}>
+              <span style={{ color: 'var(--supported)', flexShrink: 0 }}>✓</span>
+              <span><strong>{label}:</strong> {desc}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* API token callout */}
+        <div className="alert alert-info" style={{ marginTop: 20, marginBottom: 0 }}>
+          <strong>Where is my API token?</strong> Your bearer token was returned when you registered your account. If you need it resent, contact <a href="mailto:jim@askmcconnell.com">jim@askmcconnell.com</a>. Keep it private — anyone with your token can upload scans to your account.
         </div>
       </div>
 
@@ -184,7 +288,7 @@ export default function DocsPage() {
             ['Can I upload multiple platforms?',
              'Each upload is one CSV from one platform. Upload separately for Mac, Linux, and Windows machines. All reports are in your account history.'],
             ['What are the scanner prerequisites?',
-             'macOS and Linux: Python 3.8 or newer (pre-installed on macOS and most Linux distros). Windows: PowerShell 5.1 or newer, which is pre-installed on Windows 10 and 11 — no download required.'],
+             'macOS and Linux: Python 3.8 or newer (pre-installed on macOS and most Linux distros). Windows: Download both Run_S3C_Scanner.bat and s3c_scan_windows.ps1 to the same folder, then double-click the .bat file. PowerShell 5.1+ is pre-installed on Windows 10 and 11 — no additional software required. Do not run the .ps1 directly from cmd.exe; Windows execution policy will silently block it.'],
           ].map(([q, a]) => (
             <div key={q}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{q}</div>

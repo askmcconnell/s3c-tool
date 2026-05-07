@@ -187,13 +187,16 @@ conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
 # Export only resolved (non-unknown) entries updated in the last 2 days
+# (includes rows recently NVD-enriched, which updates cve_checked_at not checked_at)
 rows = conn.execute("""
     SELECT lookup_key, software_name, vendor, version, platform,
            eol_status, eol_date, latest_version, latest_source_url,
-           confidence, source as ref_source, notes, checked_at, expires_at
+           confidence, source as ref_source, notes, checked_at, expires_at,
+           cve_count, cve_critical, cve_high, cve_medium, cve_low, cve_checked_at
     FROM s3c_reference
     WHERE eol_status != 'unknown'
-      AND checked_at >= datetime('now', '-2 days')
+      AND (checked_at     >= datetime('now', '-2 days')
+        OR cve_checked_at >= datetime('now', '-2 days'))
     ORDER BY hit_count DESC
     LIMIT 2000
 """).fetchall()

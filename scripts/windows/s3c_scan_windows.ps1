@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     S3C-Tool Windows File-Level Inventory Scanner
-    S3C-Tool - Software Security Supply Chain Tool v1.1.0
+    S3C-Tool - Software Security Supply Chain Tool v1.2.0
 
 .DESCRIPTION
     Scans installed programs, file version properties, Windows Store apps,
@@ -40,17 +40,20 @@
 
 [CmdletBinding()]
 param(
-    [string]$Output = "",
+    [string]$Output         = "",
     [switch]$Quick,
     [switch]$NoProgramFiles,
-    [switch]$NoPython
+    [switch]$NoPython,
+    [switch]$AutoUpload,
+    [string]$Token          = "",
+    [string]$Label          = ""
 )
 
 # Suppress non-critical errors from noisy cmdlets
 $ErrorActionPreference = 'SilentlyContinue'
 
 $SVRT_FORMAT_VERSION = '1.0'   # CSV schema version — bump only when columns change
-$SCANNER_VERSION     = '1.1.0' # Tool version — follows SemVer (major.minor.patch)
+$SCANNER_VERSION     = '1.2.0' # Tool version — follows SemVer (major.minor.patch)
 $TODAY               = (Get-Date -Format 'yyyy-MM-dd')
 $PLATFORM            = 'windows'
 
@@ -755,16 +758,65 @@ Write-Host ""
 Write-Host "  FILE SAVED TO:" -ForegroundColor Cyan
 Write-Host "  $Output" -ForegroundColor White
 Write-Host ""
-Write-Host "  Next step: upload this file at" -ForegroundColor Gray
-Write-Host "  https://askmcconnell.com/s3c" -ForegroundColor Cyan
-Write-Host ""
+if ($AutoUpload) {
+    if (-not $Token) {
+        Write-Host "  ERROR: -AutoUpload requires -Token <api_token>" -ForegroundColor Red
+        exit 1
+    }
+    $machineLabel = if ($Label) { $Label } else { $env:COMPUTERNAME }
+    Write-Host "  Uploading to S3C-Tool (label: $machineLabel)..." -ForegroundColor Cyan
 
-# Open File Explorer to the output folder so they can find the file easily
-$outputDir = Split-Path $Output -Parent
-if (Test-Path $outputDir) {
-    Invoke-Item $outputDir
+    try {
+        $boundary   = "S3CBoundary$([System.Guid]::NewGuid().ToString('N').Substring(0,12))"
+        $fileBytes  = [System.IO.File]::ReadAllBytes($Output)
+        $fileName   = [System.IO.Path]::GetFileName($Output)
+        $enc        = [System.Text.Encoding]::UTF8
+
+        $bodyParts  = [System.Collections.Generic.List[byte[]]]::new()
+        $fileHeader = "--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$fileName`"`r`nContent-Type: text/csv`r`n`r`n"
+        $bodyParts.Add($enc.GetBytes($fileHeader))
+        $bodyParts.Add($fileBytes)
+        $bodyParts.Add($enc.GetBytes("`r`n"))
+        $labelPart  = "--$boundary`r`nContent-Disposition: form-data; name=`"machine_label`"`r`n`r`n$machineLabel`r`n"
+        $bodyParts.Add($enc.GetBytes($labelPart))
+        $bodyParts.Add($enc.GetBytes("--$boundary--`r`n"))
+
+        $totalSize  = ($bodyParts | Measure-Object -Property Length -Sum).Sum
+        $body       = [byte[]]::new($totalSize)
+        $offset     = 0
+        foreach ($part in $bodyParts) { [System.Buffer]::BlockCopy($part, 0, $body, $offset, $part.Length); $offset += $part.Length }
+
+        $response = Invoke-RestMethod -Uri 'https://askmcconnell.com/wp-json/s3c/v1/upload' `
+            -Method Post `
+            -Body $body `
+            -ContentType "multipart/form-data; boundary=$boundary" `
+            -Headers @{ Authorization = "Bearer $Token" }
+
+        $uuid    = $response.uuid
+        $logPath = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($Output), 's3c_result.log')
+        $logLine = "$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')  label=$machineLabel  uuid=$uuid  rows=$($response.row_count)"
+        Add-Content -Path $logPath -Value $logLine
+
+        Write-Host "  Upload accepted -- Job UUID: $uuid" -ForegroundColor Green
+        Write-Host "  Result logged to: $logPath" -ForegroundColor Gray
+        Write-Host "  Report: https://askmcconnell.com/s3c/?scan=$uuid" -ForegroundColor Cyan
+        Write-Host ""
+    } catch {
+        Write-Host "  Upload failed: $_" -ForegroundColor Red
+        Write-Host ""
+    }
+} else {
+    Write-Host "  Next step: upload this file at" -ForegroundColor Gray
+    Write-Host "  https://askmcconnell.com/s3c" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Open File Explorer to the output folder so they can find the file easily
+    $outputDir = Split-Path $Output -Parent
+    if (Test-Path $outputDir) {
+        Invoke-Item $outputDir
+    }
+
+    Write-Host "  (File Explorer has been opened to your output folder.)" -ForegroundColor Gray
+    Write-Host ""
+    Read-Host "  Press Enter to close this window"
 }
-
-Write-Host "  (File Explorer has been opened to your output folder.)" -ForegroundColor Gray
-Write-Host ""
-Read-Host "  Press Enter to close this window"

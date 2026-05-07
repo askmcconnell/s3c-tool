@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "specification": "https://datatracker.ietf.org/doc/draft-mcconnell-software-status-wellknown/",
+  "name": "S3C-Tool",
+  "vendor": "Ask McConnell, LLC",
+  "vendor_url": "https://askmcconnell.com",
+  "description": "Software Security Supply Chain Tool — EOL, unpatched, and CVE detection for installed software inventories.",
+  "source_url": "https://github.com/askmcconnell/s3c-tool",
+  "license": "MIT",
+  "contact": "s3c@askmcconnell.com",
+  "generated_at": "2026-04-22",
+  "versions": [
+    {
+      "version": "1.0",
+      "status": "active",
+      "release_date": "2026-04-22",
+      "support_ends": null,
+      "notes": "Initial public release. Actively maintained."
+    }
+  ]
+}

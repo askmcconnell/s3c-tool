@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
 import Nav from './components/Nav'
+import Footer from './components/Footer'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import UploadPage from './pages/UploadPage'
@@ -27,11 +28,10 @@ export default function App() {
       <Nav />
       <main className="main">
         <Routes>
+
           <Route path="/login"    element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
-          <Route path="/" element={
-            <RequireAuth><UploadPage /></RequireAuth>
-          } />
+          <Route path="/" element={<UploadPage />} />
           <Route path="/results/:uuid" element={
             <RequireAuth><ResultsPage /></RequireAuth>
           } />
@@ -51,6 +51,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <Footer />
     </div>
   )
 }

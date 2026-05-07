@@ -2,12 +2,12 @@
 /**
  * Plugin Name: S3C-Tool — Software Security Supply Chain Tool
  * Description: Backend for askmcconnell.com/s3c — S3C-Tool (Software Security Supply Chain Tool). Contributor auth, inventory upload, EOL report generation, and reference DB management.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Ask McConnell
  */
 defined('ABSPATH') || exit;
 
-define('S3C_VERSION',      '1.0.0');
+define('S3C_VERSION',      '1.1.0');
 define('S3C_TOKEN_EXPIRY', 30 * DAY_IN_SECONDS);
 define('S3C_TOKEN_PREFIX', 's3c_auth_');
 define('S3C_UPLOAD_LIMIT', 5000);   // max rows per upload
@@ -71,6 +71,7 @@ function s3c_create_tables(): void {
         error_msg            TEXT         DEFAULT NULL,
         report_token         VARCHAR(64)  DEFAULT NULL,
         report_token_expires DATETIME     DEFAULT NULL,
+        machine_label        VARCHAR(255) DEFAULT NULL,
         PRIMARY KEY (id),
         UNIQUE KEY uuid (uuid),
         KEY user_id (user_id),
@@ -86,11 +87,16 @@ function s3c_create_tables(): void {
         "{$wpdb->prefix}s3c_upload_jobs", 'report_token_expires',
         "ALTER TABLE {$wpdb->prefix}s3c_upload_jobs ADD COLUMN report_token_expires DATETIME DEFAULT NULL"
     );
+    s3c_maybe_add_column(
+        "{$wpdb->prefix}s3c_upload_jobs", 'machine_label',
+        "ALTER TABLE {$wpdb->prefix}s3c_upload_jobs ADD COLUMN machine_label VARCHAR(255) DEFAULT NULL"
+    );
 
-    // CVE columns — inventory_rows (existing installs migration)
+    // CVE + KEV columns — inventory_rows (existing installs migration)
     foreach (['cve_count INT DEFAULT NULL', 'cve_critical SMALLINT DEFAULT NULL',
               'cve_high SMALLINT DEFAULT NULL', 'cve_medium SMALLINT DEFAULT NULL',
-              'cve_low SMALLINT DEFAULT NULL'] as $col_def) {
+              'cve_low SMALLINT DEFAULT NULL',
+              'kev_count INT DEFAULT NULL'] as $col_def) {
         $col = explode(' ', $col_def)[0];
         s3c_maybe_add_column(
             "{$wpdb->prefix}s3c_inventory_rows", $col,
@@ -98,11 +104,12 @@ function s3c_create_tables(): void {
         );
     }
 
-    // CVE columns — reference table (existing installs migration)
+    // CVE + KEV columns — reference table (existing installs migration)
     foreach (['cve_count INT DEFAULT NULL', 'cve_critical SMALLINT DEFAULT NULL',
               'cve_high SMALLINT DEFAULT NULL', 'cve_medium SMALLINT DEFAULT NULL',
               'cve_low SMALLINT DEFAULT NULL',
-              'cve_checked_at DATETIME DEFAULT NULL'] as $col_def) {
+              'cve_checked_at DATETIME DEFAULT NULL',
+              'kev_count INT DEFAULT NULL'] as $col_def) {
         $col = explode(' ', $col_def)[0];
         s3c_maybe_add_column(
             "{$wpdb->prefix}s3c_reference", $col,
@@ -679,7 +686,19 @@ function s3c_api_upload(WP_REST_Request $req): WP_REST_Response|WP_Error {
     global $wpdb;
 
     if (!$sub) {
-        return new WP_Error('no_account', 'Contributor account record not found.', ['status' => 403]);
+        // Auto-create subscriber record for authenticated WP users who registered
+        // outside the S3C API flow (e.g. direct WP admin accounts).
+        $wpdb->insert("{$wpdb->prefix}s3c_subscribers", [
+            'user_id'      => $user->ID,
+            'plan'         => 'contributor',
+            'upload_quota' => 0,
+            'uploads_used' => 0,
+            'company'      => '',
+        ]);
+        $sub = s3c_get_subscriber($user->ID);
+        if (!$sub) {
+            return new WP_Error('no_account', 'Contributor account record not found.', ['status' => 403]);
+        }
     }
 
     // Get uploaded file
@@ -768,13 +787,16 @@ function s3c_api_upload(WP_REST_Request $req): WP_REST_Response|WP_Error {
     }
 
     // Create job
-    $uuid = wp_generate_uuid4();
+    $uuid          = wp_generate_uuid4();
+    $machine_label = substr(sanitize_text_field($req->get_param('machine_label') ?? ''), 0, 255) ?: null;
     $wpdb->insert("{$wpdb->prefix}s3c_upload_jobs", [
-        'uuid'      => $uuid,
-        'user_id'   => $user->ID,
-        'status'    => 'pending',
-        'row_count' => count($rows),
-        'filename'  => sanitize_text_field($file['name']),
+        'uuid'          => $uuid,
+        'user_id'       => $user->ID,
+        'status'        => 'pending',
+        'row_count'     => count($rows),
+        'filename'      => sanitize_text_field($file['name']),
+        'machine_label' => $machine_label,
+        'created_at'    => gmdate('Y-m-d H:i:s'),   // force UTC regardless of MySQL server timezone
     ]);
     $job_id = $wpdb->insert_id;
 
@@ -804,7 +826,7 @@ function s3c_api_upload(WP_REST_Request $req): WP_REST_Response|WP_Error {
         'job_id'    => $job_id,
         'row_count' => count($rows),
         'status'    => 'pending',
-        'message'   => 'Upload accepted. Poll /wp-json/svrt/v1/job/' . $uuid . ' for status.',
+        'message'   => 'Upload accepted. Poll /wp-json/s3c/v1/job/' . $uuid . ' for status.',
     ], 202);
 }
 
@@ -1146,11 +1168,28 @@ function s3c_lookup_reference(string $name, string $vendor, string $version): ?a
         $key
     ), ARRAY_A);
 
-    // Fuzzy fallback: search by lowercase software_name
+    // Fuzzy fallback: same software name, pick the closest major version.
+    // Without ORDER BY the old query returned a random row — e.g. 7-Zip 25 would
+    // match the 7-Zip v16 EOL entry instead of the v24 "supported" entry.
+    // ABS(CAST(version)-major) sorts by proximity; ties broken by version DESC
+    // so newer data wins. Only fires when exact hash misses (different major or
+    // vendor string mismatch).
+    //
+    // Cross-ecosystem guard: exclude pypi/npm sourced entries from fuzzy matching.
+    // Without this, macOS CLI tools (ab, ac, alias, amt...) would fuzzy-match
+    // PyPI/npm packages of the same short name, producing false no_patch results.
+    // Exact hash lookups (above) can still legitimately resolve pypi/npm entries.
     if (!$ref) {
+        $major_int = (int) $major;
         $ref = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}s3c_reference WHERE LOWER(software_name) = %s LIMIT 1",
-            strtolower(trim($name))
+            "SELECT * FROM {$wpdb->prefix}s3c_reference
+             WHERE LOWER(software_name) = %s
+               AND LOWER(COALESCE(ref_source, '')) NOT IN ('pypi', 'npm')
+             ORDER BY ABS(CAST(NULLIF(version, '') AS UNSIGNED) - %d) ASC,
+                      CAST(NULLIF(version, '') AS UNSIGNED) DESC
+             LIMIT 1",
+            strtolower(trim($name)),
+            $major_int
         ), ARRAY_A);
     }
 
@@ -1192,6 +1231,7 @@ function s3c_lookup_reference(string $name, string $vendor, string $version): ?a
         'cve_high'          => isset($ref['cve_high'])     ? (int) $ref['cve_high']     : null,
         'cve_medium'        => isset($ref['cve_medium'])   ? (int) $ref['cve_medium']   : null,
         'cve_low'           => isset($ref['cve_low'])      ? (int) $ref['cve_low']      : null,
+        'kev_count'         => isset($ref['kev_count'])    ? (int) $ref['kev_count']    : null,
     ];
 }
 
@@ -1237,6 +1277,7 @@ function s3c_api_job_status(WP_REST_Request $req): WP_REST_Response|WP_Error {
         'eol_count'     => (int) $job['eol_count'],
         'progress_pct'  => min(100, $progress),
         'filename'      => $job['filename'],
+        'machine_label' => $job['machine_label'] ?: null,
         'created_at'    => $job['created_at'],
         'completed_at'  => $job['completed_at'],
         'error_msg'     => $job['error_msg'],
@@ -1276,7 +1317,7 @@ function s3c_api_job_report(WP_REST_Request $req): WP_REST_Response|WP_Error {
     $select = "SELECT software_name, vendor, version, platform, file_type, parent_app,
                       eol_status, eol_date, latest_version, latest_source_url,
                       confidence, ref_source, ref_notes, hostname_hash, scan_date,
-                      cve_count, cve_critical, cve_high, cve_medium, cve_low
+                      cve_count, cve_critical, cve_high, cve_medium, cve_low, kev_count
                FROM {$wpdb->prefix}s3c_inventory_rows";
 
     if (in_array($filter, $valid_filters, true)) {
@@ -1291,26 +1332,43 @@ function s3c_api_job_report(WP_REST_Request $req): WP_REST_Response|WP_Error {
         ), ARRAY_A);
     }
 
-    // Summary stats
-    $stats = $wpdb->get_results($wpdb->prepare(
-        "SELECT eol_status, COUNT(*) as count
-         FROM {$wpdb->prefix}s3c_inventory_rows
-         WHERE job_id = %d
-         GROUP BY eol_status",
-        $job['id']
-    ), ARRAY_A);
-    $summary = array_column($stats, 'count', 'eol_status');
+    // Deduplicate rows by (software_name, version).
+    // The Windows scanner can produce duplicate entries when the same binary appears
+    // in both the registry and file-system scans (e.g. 7-Zip), or when many system
+    // executables share the same ProductName at slightly different patch levels
+    // (e.g. Internet Explorer components in System32 / SysWOW64).
+    // Keep the first occurrence of each (name, version) pair.
+    $seen_pairs = [];
+    $rows = array_values(array_filter($rows, function ($row) use (&$seen_pairs) {
+        $key = strtolower(trim($row['software_name'])) . '|' . strtolower(trim($row['version'] ?? ''));
+        if (isset($seen_pairs[$key])) return false;
+        $seen_pairs[$key] = true;
+        return true;
+    }));
+
+    // Summary stats — re-computed from the deduplicated row list so tab counts match.
+    $summary     = ['eol' => 0, 'supported' => 0, 'lts' => 0, 'no_patch' => 0, 'unknown' => 0];
+    $cve_flagged = 0;   // rows with at least one known CVE (may overlap eol/no_patch)
+    $kev_flagged = 0;   // rows with at least one actively-exploited CVE (CISA KEV)
+    foreach ($rows as $r) {
+        $s = $r['eol_status'] ?? 'unknown';
+        if (array_key_exists($s, $summary)) $summary[$s]++;
+        if (!empty($r['cve_count']) && (int) $r['cve_count'] > 0) $cve_flagged++;
+        if (!empty($r['kev_count']) && (int) $r['kev_count'] > 0) $kev_flagged++;
+    }
 
     return new WP_REST_Response([
         'uuid'       => $uuid,
         'filename'   => $job['filename'],
         'row_count'  => (int) $job['row_count'],
         'summary'    => [
-            'eol'       => (int) ($summary['eol']       ?? 0),
-            'supported' => (int) ($summary['supported'] ?? 0),
-            'lts'       => (int) ($summary['lts']       ?? 0),
-            'no_patch'  => (int) ($summary['no_patch']  ?? 0),
-            'unknown'   => (int) ($summary['unknown']   ?? 0),
+            'eol'         => (int) $summary['eol'],
+            'supported'   => (int) $summary['supported'],
+            'lts'         => (int) $summary['lts'],
+            'no_patch'    => (int) $summary['no_patch'],
+            'unknown'     => (int) $summary['unknown'],
+            'cve_flagged' => $cve_flagged,  // items with ≥1 known CVE
+            'kev_flagged' => $kev_flagged,  // items with ≥1 actively-exploited CVE (CISA KEV)
         ],
         'items'      => $rows,
     ], 200);
@@ -1323,7 +1381,7 @@ function s3c_api_my_jobs(WP_REST_Request $req): WP_REST_Response {
     $user_id = get_current_user_id();
 
     $jobs = $wpdb->get_results($wpdb->prepare(
-        "SELECT uuid, status, filename, row_count, matched_count, eol_count, created_at, completed_at
+        "SELECT uuid, status, filename, machine_label, row_count, matched_count, eol_count, created_at, completed_at
          FROM {$wpdb->prefix}s3c_upload_jobs
          WHERE user_id = %d
          ORDER BY created_at DESC
@@ -1460,18 +1518,43 @@ function s3c_api_reference_search(WP_REST_Request $req): WP_REST_Response|WP_Err
 function s3c_api_stats(WP_REST_Request $req): WP_REST_Response {
     global $wpdb;
 
-    $ref_total = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference");
-    $ref_eol   = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='eol'");
-    $ref_supp  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='supported'");
-    $subs      = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_subscribers");
-    $jobs      = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs WHERE status='complete'");
+    $ref_total    = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference");
+    $ref_eol      = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='eol'");
+    $ref_supp     = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='supported'");
+    $ref_nopatch  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='no_patch'");
+    $ref_unknown  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='unknown'");
+    $ref_lts      = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='lts'");
+    $subs         = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_subscribers");
+    $jobs         = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs WHERE status='complete'");
+
+    // Aggregate risk figures for the public headline banner
+    $ir             = "{$wpdb->prefix}s3c_inventory_rows";
+    $uj             = "{$wpdb->prefix}s3c_upload_jobs";
+    $completed_sql  = "SELECT id FROM {$uj} WHERE status='complete'";
+    $total_items    = (int) $wpdb->get_var(
+        "SELECT COUNT(*) FROM {$ir} WHERE job_id IN ($completed_sql) AND software_name != ''"
+    );
+    $at_risk        = (int) $wpdb->get_var(
+        "SELECT COUNT(*) FROM {$ir}
+         WHERE job_id IN ($completed_sql)
+           AND software_name != ''
+           AND (
+               eol_status IN ('eol','no_patch')
+               OR (cve_count IS NOT NULL AND cve_count > 0)
+           )"
+    );
 
     return new WP_REST_Response([
         'reference_entries'   => $ref_total,
         'eol_entries'         => $ref_eol,
         'supported_entries'   => $ref_supp,
+        'no_patch_entries'    => $ref_nopatch,
+        'unknown_entries'     => $ref_unknown,
+        'lts_entries'         => $ref_lts,
         'contributors'        => $subs,
         'scans_completed'     => $jobs,
+        'total_items'         => $total_items,
+        'at_risk_deduped'     => $at_risk,
         'format_version'      => '1.0',
         'last_updated'        => get_option('s3c_last_reference_import', ''),
     ], 200);
@@ -1499,6 +1582,7 @@ function s3c_api_admin_import_reference(WP_REST_Request $req): WP_REST_Response|
             continue;
         }
         $has_cve = isset($entry['cve_count']);
+        $has_kev = isset($entry['kev_count']);
         $cve_sql = $has_cve
             ? ', cve_count, cve_critical, cve_high, cve_medium, cve_low, cve_checked_at'
             : '';
@@ -1510,6 +1594,9 @@ function s3c_api_admin_import_reference(WP_REST_Request $req): WP_REST_Response|
                cve_high=VALUES(cve_high), cve_medium=VALUES(cve_medium),
                cve_low=VALUES(cve_low), cve_checked_at=VALUES(cve_checked_at)'
             : '';
+        $kev_sql    = $has_kev ? ', kev_count' : '';
+        $kev_vals   = $has_kev ? ', %d' : '';
+        $kev_update = $has_kev ? ', kev_count=VALUES(kev_count)' : '';
 
         $base_args = [
             $entry['lookup_key'],
@@ -1537,13 +1624,16 @@ function s3c_api_admin_import_reference(WP_REST_Request $req): WP_REST_Response|
                 $entry['cve_checked_at']      ?? gmdate('Y-m-d H:i:s'),
             ]);
         }
+        if ($has_kev) {
+            $base_args[] = (int) ($entry['kev_count'] ?? 0);
+        }
 
         $result = $wpdb->query($wpdb->prepare(
             "INSERT INTO {$wpdb->prefix}s3c_reference
                 (lookup_key, software_name, vendor, version, platform,
                  eol_status, eol_date, latest_version, latest_source_url,
-                 confidence, ref_source, notes, hit_count, checked_at, expires_at{$cve_sql})
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,0,%s,%s{$cve_vals})
+                 confidence, ref_source, notes, hit_count, checked_at, expires_at{$cve_sql}{$kev_sql})
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,0,%s,%s{$cve_vals}{$kev_vals})
              ON DUPLICATE KEY UPDATE
                 eol_status=VALUES(eol_status),
                 eol_date=VALUES(eol_date),
@@ -1553,7 +1643,7 @@ function s3c_api_admin_import_reference(WP_REST_Request $req): WP_REST_Response|
                 ref_source=VALUES(ref_source),
                 notes=VALUES(notes),
                 checked_at=VALUES(checked_at),
-                expires_at=VALUES(expires_at){$cve_update}",
+                expires_at=VALUES(expires_at){$cve_update}{$kev_update}",
             ...$base_args
         ));
         if ($result !== false) $imported++;
@@ -1649,17 +1739,33 @@ function s3c_api_dashboard(WP_REST_Request $req): WP_REST_Response {
 
     $total_items = max(1, (int) ($summary_row['total_items'] ?? 1));
 
+    // Deduplicated "needs security attention" count:
+    // Items where status is EOL or no_patch OR they carry at least one known CVE.
+    // Single query avoids double-counting items that fall into multiple categories.
+    $at_risk_deduped = (int) $wpdb->get_var(
+        "SELECT COUNT(*)
+         FROM $ir
+         WHERE job_id IN ($completed_ids_sql)
+           AND software_name != ''
+           AND (
+               eol_status IN ('eol', 'no_patch')
+               OR (cve_count IS NOT NULL AND cve_count > 0)
+           )"
+    );
+
     $summary = [
-        'total_scans'     => (int) ($summary_row['total_scans']    ?? 0),
-        'total_items'     => (int) ($summary_row['total_items']    ?? 0),
-        'unique_products' => (int) ($summary_row['unique_products'] ?? 0),
-        'eol'             => (int) ($summary_row['eol']            ?? 0),
-        'outdated'        => (int) ($summary_row['outdated']       ?? 0),
-        'no_patch'        => (int) ($summary_row['no_patch']       ?? 0),
-        'supported'       => (int) ($summary_row['supported']      ?? 0),
-        'lts'             => (int) ($summary_row['lts']            ?? 0),
-        'unknown'         => (int) ($summary_row['unknown_count']  ?? 0),
-        'eol_pct'         => round((int) ($summary_row['eol'] ?? 0) / $total_items * 100, 1),
+        'total_scans'      => (int) ($summary_row['total_scans']    ?? 0),
+        'total_items'      => (int) ($summary_row['total_items']    ?? 0),
+        'unique_products'  => (int) ($summary_row['unique_products'] ?? 0),
+        'eol'              => (int) ($summary_row['eol']            ?? 0),
+        'outdated'         => (int) ($summary_row['outdated']       ?? 0),
+        'no_patch'         => (int) ($summary_row['no_patch']       ?? 0),
+        'supported'        => (int) ($summary_row['supported']      ?? 0),
+        'lts'              => (int) ($summary_row['lts']            ?? 0),
+        'unknown'          => (int) ($summary_row['unknown_count']  ?? 0),
+        // eol_pct includes eol + no_patch + outdated — matches the per-platform formula
+        'eol_pct'          => round(((int)($summary_row['eol'] ?? 0) + (int)($summary_row['no_patch'] ?? 0) + (int)($summary_row['outdated'] ?? 0)) / $total_items * 100, 1),
+        'at_risk_deduped'  => $at_risk_deduped,  // EOL + no_patch + CVE, deduplicated
     ];
 
     // ── Top 20 EOL software across all uploads ───────────────
@@ -1776,7 +1882,11 @@ function s3c_api_dashboard(WP_REST_Request $req): WP_REST_Response {
             SUM(CASE WHEN expires_at IS NOT NULL
                       AND expires_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 DAY)
                      THEN 1 ELSE 0 END)                                                AS expiring_soon,
-            MAX(checked_at)                                                             AS last_checked_at
+            MAX(checked_at)                                                             AS last_checked_at,
+            SUM(CASE WHEN cve_checked_at IS NOT NULL THEN 1 ELSE 0 END)               AS nvd_checked,
+            SUM(CASE WHEN cve_count > 0              THEN 1 ELSE 0 END)               AS nvd_with_cves,
+            SUM(CASE WHEN kev_count > 0              THEN 1 ELSE 0 END)               AS kev_flagged,
+            SUM(CASE WHEN eol_status = 'unknown'     THEN 1 ELSE 0 END)               AS unknown_count
          FROM $ref_tbl",
         ARRAY_A
     ) ?: [];
@@ -1802,6 +1912,10 @@ function s3c_api_dashboard(WP_REST_Request $req): WP_REST_Response {
             'last_sync'     => get_option('s3c_last_reference_import', null),
             'last_checked_at' => $ref_row['last_checked_at'] ?? null,
             'coverage_pct'  => $coverage_pct,
+            'nvd_checked'   => (int) ($ref_row['nvd_checked']   ?? 0),
+            'nvd_with_cves' => (int) ($ref_row['nvd_with_cves'] ?? 0),
+            'kev_flagged'   => (int) ($ref_row['kev_flagged']   ?? 0),
+            'nvd_ineligible'=> (int) ($ref_row['unknown_count'] ?? 0),  // unknown-status rows — NVD enricher skips these intentionally
         ],
         'cached'        => false,
         'generated_at'  => gmdate('Y-m-d H:i:s'),
@@ -2137,40 +2251,183 @@ add_action('admin_menu', function () {
 
 function s3c_admin_page(): void {
     global $wpdb;
-    $ref_count  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference");
-    $sub_count  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_subscribers");
-    $job_count  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs");
-    $eol_count  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='eol'");
+
+    // ── Counts ────────────────────────────────────────────────
+    $ref_count   = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference");
+    $sub_count   = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_subscribers");
+    $job_count   = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs");
+    $eol_count   = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_reference WHERE eol_status='eol'");
+    $done_count  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs WHERE status='complete'");
+    $today_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}s3c_upload_jobs WHERE DATE(created_at)=CURDATE()");
     $last_import = get_option('s3c_last_reference_import', 'Never');
 
-    // Handle secret key save
+    // ── Settings save ─────────────────────────────────────────
     if (isset($_POST['s3c_save_secret']) && check_admin_referer('s3c_settings')) {
         $secret = sanitize_text_field($_POST['s3c_process_secret'] ?? '');
         update_option('s3c_process_secret', $secret);
         echo '<div class="notice notice-success"><p>Settings saved.</p></div>';
     }
     $current_secret = get_option('s3c_process_secret', '');
+
+    // ── Recent uploads ────────────────────────────────────────
+    $recent_jobs = $wpdb->get_results(
+        "SELECT j.uuid, j.status, j.row_count, j.eol_count, j.matched_count,
+                j.filename, j.machine_label, j.created_at, j.completed_at, u.user_email
+         FROM {$wpdb->prefix}s3c_upload_jobs j
+         LEFT JOIN {$wpdb->users} u ON j.user_id = u.ID
+         ORDER BY j.created_at DESC
+         LIMIT 25",
+        ARRAY_A
+    );
+
+    // ── Subscribers ───────────────────────────────────────────
+    $subscribers = $wpdb->get_results(
+        "SELECT u.user_email, s.plan, s.uploads_used, s.upload_quota,
+                s.created_at,
+                (SELECT MAX(j2.created_at) FROM {$wpdb->prefix}s3c_upload_jobs j2
+                 WHERE j2.user_id = s.user_id) AS last_upload
+         FROM {$wpdb->prefix}s3c_subscribers s
+         LEFT JOIN {$wpdb->users} u ON s.user_id = u.ID
+         ORDER BY s.created_at DESC",
+        ARRAY_A
+    );
+
+    // ── Scans per day (last 7 days) ───────────────────────────
+    $daily_scans = $wpdb->get_results(
+        "SELECT DATE(created_at) AS day, COUNT(*) AS scans
+         FROM {$wpdb->prefix}s3c_upload_jobs
+         WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+         GROUP BY DATE(created_at)
+         ORDER BY day ASC",
+        ARRAY_A
+    );
+
+    $status_colors = [
+        'done'       => '#00a32a',
+        'pending'    => '#996800',
+        'processing' => '#2271b1',
+        'error'      => '#d63638',
+    ];
     ?>
     <div class="wrap">
-        <h1>SVRT — Software Security Supply Chain Tool</h1>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:20px 0">
+        <h1>S3C-Tool — Admin Dashboard</h1>
+
+        <!-- ── Stat cards ── -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;margin:20px 0">
             <?php foreach ([
-                ['Reference Entries', $ref_count, '#2271b1'],
-                ['EOL Entries',       $eol_count, '#d63638'],
-                ['Contributors',       $sub_count, '#00a32a'],
-                ['Total Scans',       $job_count, '#996800'],
+                ['Reference Entries', number_format($ref_count),   '#2271b1'],
+                ['EOL Entries',       number_format($eol_count),   '#d63638'],
+                ['Subscribers',       number_format($sub_count),   '#00a32a'],
+                ['Total Scans',       number_format($job_count),   '#996800'],
+                ['Completed Scans',   number_format($done_count),  '#00a32a'],
+                ['Scans Today',       number_format($today_count), '#2271b1'],
             ] as [$label, $val, $col]): ?>
             <div style="background:#fff;border:1px solid #ddd;border-top:4px solid <?php echo $col ?>;padding:16px;border-radius:4px">
-                <div style="font-size:28px;font-weight:700;color:<?php echo $col ?>"><?php echo number_format($val) ?></div>
-                <div style="color:#666;font-size:13px"><?php echo $label ?></div>
+                <div style="font-size:26px;font-weight:700;color:<?php echo $col ?>"><?php echo $val ?></div>
+                <div style="color:#666;font-size:12px;margin-top:4px"><?php echo $label ?></div>
             </div>
             <?php endforeach; ?>
         </div>
 
-        <p><strong>Last reference import:</strong> <?php echo esc_html($last_import) ?></p>
-        <p><strong>API namespace:</strong> <code>/wp-json/svrt/v1/</code></p>
+        <p style="color:#666;font-size:13px">
+            <strong>Last Pi import:</strong> <?php echo esc_html($last_import) ?> &nbsp;|&nbsp;
+            <strong>API:</strong> <code>/wp-json/s3c/v1/</code>
+        </p>
 
-        <h2>Settings</h2>
+        <!-- ── Scans per day ── -->
+        <?php if (!empty($daily_scans)): ?>
+        <h2 style="margin-top:28px">Scans — Last 7 Days</h2>
+        <div style="display:flex;gap:8px;align-items:flex-end;height:80px;margin-bottom:8px">
+            <?php
+            $max_scans = max(1, max(array_column($daily_scans, 'scans')));
+            foreach ($daily_scans as $d):
+                $pct = round(($d['scans'] / $max_scans) * 100);
+            ?>
+            <div style="display:flex;flex-direction:column;align-items:center;flex:1">
+                <div style="font-size:11px;color:#666;margin-bottom:2px"><?php echo $d['scans'] ?></div>
+                <div style="background:#2271b1;width:100%;height:<?php echo max(4, $pct) ?>%;border-radius:2px 2px 0 0;min-height:4px"></div>
+                <div style="font-size:10px;color:#999;margin-top:4px"><?php echo date('M j', strtotime($d['day'])) ?></div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ── Recent Uploads ── -->
+        <h2 style="margin-top:32px">Recent Uploads <span style="font-size:13px;font-weight:400;color:#666">(last 25)</span></h2>
+        <table class="wp-list-table widefat fixed striped" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th style="width:180px">User</th>
+                    <th style="width:140px">File</th>
+                    <th style="width:130px">Machine</th>
+                    <th style="width:80px">Status</th>
+                    <th style="width:60px">Rows</th>
+                    <th style="width:60px">Matched</th>
+                    <th style="width:50px">EOL</th>
+                    <th style="width:150px">Submitted</th>
+                    <th style="width:150px">Completed</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($recent_jobs as $job):
+                $col = $status_colors[$job['status']] ?? '#666';
+                $fname = $job['filename'] ? esc_html(basename($job['filename'])) : '—';
+                $submitted  = $job['created_at']   ? date('M j, Y g:ia', strtotime($job['created_at']))   : '—';
+                $completed  = $job['completed_at'] ? date('M j, Y g:ia', strtotime($job['completed_at'])) : '—';
+            ?>
+                <tr>
+                    <td><?php echo esc_html($job['user_email'] ?? '—') ?></td>
+                    <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="<?php echo esc_attr($fname) ?>"><?php echo $fname ?></td>
+                    <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:<?php echo $job['machine_label'] ? '#2271b1' : '#999' ?>">
+                        <?php echo $job['machine_label'] ? esc_html($job['machine_label']) : '—' ?>
+                    </td>
+                    <td><span style="color:<?php echo $col ?>;font-weight:600"><?php echo esc_html($job['status']) ?></span></td>
+                    <td><?php echo number_format((int)$job['row_count']) ?></td>
+                    <td><?php echo number_format((int)$job['matched_count']) ?></td>
+                    <td><?php echo number_format((int)$job['eol_count']) ?></td>
+                    <td><?php echo $submitted ?></td>
+                    <td><?php echo $completed ?></td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if (empty($recent_jobs)): ?>
+                <tr><td colspan="9" style="text-align:center;color:#999;padding:20px">No uploads yet.</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
+
+        <!-- ── Subscribers ── -->
+        <h2 style="margin-top:40px">Subscribers</h2>
+        <table class="wp-list-table widefat fixed striped" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th>Email</th>
+                    <th style="width:90px">Plan</th>
+                    <th style="width:110px">Uploads Used</th>
+                    <th style="width:140px">Joined</th>
+                    <th style="width:160px">Last Upload</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($subscribers as $sub):
+                $joined      = $sub['created_at']  ? date('M j, Y', strtotime($sub['created_at']))         : '—';
+                $last_upload = $sub['last_upload']  ? date('M j, Y g:ia', strtotime($sub['last_upload']))  : 'Never';
+            ?>
+                <tr>
+                    <td><?php echo esc_html($sub['user_email'] ?? '—') ?></td>
+                    <td><?php echo esc_html($sub['plan']) ?></td>
+                    <td><?php echo (int)$sub['uploads_used'] ?> / <?php echo (int)$sub['upload_quota'] ?></td>
+                    <td><?php echo $joined ?></td>
+                    <td><?php echo $last_upload ?></td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if (empty($subscribers)): ?>
+                <tr><td colspan="5" style="text-align:center;color:#999;padding:20px">No subscribers yet.</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
+
+        <!-- ── Settings ── -->
+        <h2 style="margin-top:40px">Settings</h2>
         <form method="post">
             <?php wp_nonce_field('s3c_settings') ?>
             <table class="form-table">
@@ -2180,7 +2437,7 @@ function s3c_admin_page(): void {
                         <input type="text" name="s3c_process_secret"
                                value="<?php echo esc_attr($current_secret) ?>" class="regular-text">
                         <p class="description">
-                            Used to authenticate the <code>/wp-json/svrt/v1/process?secret=KEY</code> endpoint
+                            Used to authenticate the <code>/wp-json/s3c/v1/process?secret=KEY</code> endpoint
                             (UptimeRobot ping URL). Generate a random string and keep it private.
                         </p>
                     </td>
@@ -2189,12 +2446,6 @@ function s3c_admin_page(): void {
             <p><input type="submit" name="s3c_save_secret" class="button-primary" value="Save Settings"></p>
         </form>
 
-        <h2>Quick Links</h2>
-        <ul>
-            <li><a href="<?php echo rest_url('svrt/v1/stats') ?>" target="_blank">Stats endpoint (public)</a></li>
-            <li><a href="<?php echo rest_url('svrt/v1/admin/subscribers') ?>" target="_blank">Contributors list</a></li>
-            <li><a href="<?php echo rest_url('svrt/v1/admin/jobs') ?>" target="_blank">Recent jobs</a></li>
-        </ul>
     </div>
     <?php
 }

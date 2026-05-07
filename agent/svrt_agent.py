@@ -77,6 +77,35 @@ OPENAI_INPUT_COST_PER_M  = 0.15;  OPENAI_OUTPUT_COST_PER_M  = 0.60
 GEMINI_INPUT_COST_PER_M  = 0.075; GEMINI_OUTPUT_COST_PER_M  = 0.30
 XAI_INPUT_COST_PER_M     = 0.30;  XAI_OUTPUT_COST_PER_M     = 0.50
 
+# ── Proprietary / vendor-internal skip list ───────────────────────────────────
+# Software names matching these prefixes or exact strings are vendor-proprietary
+# and will never appear in public EOL databases, PyPI, npm, endoflife.date, etc.
+# Skipped at import time (never enters queue) AND at research time (belt+suspenders).
+# Marked directly as unknown/proprietary — no LLM calls wasted.
+# Add new prefixes here as new device types are scanned.
+PROPRIETARY_SKIP_PREFIXES = [
+    'unifi-',           # Ubiquiti UniFi OS internal components
+    'ubnt-',            # Ubiquiti legacy prefix
+    'udapi-',           # Ubiquiti internal API daemons
+    'rpi-',             # Raspberry Pi Foundation OS utilities
+    'rpicam-',          # Raspberry Pi camera stack
+    'lxplug-',          # LXDE/Pi desktop panel plugins
+    'pi-',              # Raspberry Pi OS specific utilities
+    'raspi-',           # Raspberry Pi hardware tools
+]
+PROPRIETARY_SKIP_EXACT = set([
+    # Add exact proprietary product names here if prefix matching is too broad
+])
+
+def is_proprietary(product: str) -> bool:
+    """Return True if this product name is a known vendor-proprietary component
+    that has no public EOL lifecycle data and should never be sent to LLMs."""
+    name = product.lower().strip()
+    for prefix in PROPRIETARY_SKIP_PREFIXES:
+        if name.startswith(prefix):
+            return True
+    return name in PROPRIETARY_SKIP_EXACT
+
 # Lookup chain confidence scores
 CONF_ENDOFLIFE_DATE = 85
 CONF_PKG_MGR        = 65   # PyPI / npm / RubyGems active package signal
@@ -1315,6 +1344,12 @@ def import_csv(conn, csv_path, batch_size=100):
                 continue
 
             product_norm = normalize_product_name(product)
+
+            # Skip proprietary vendor-internal components — no public EOL data exists
+            if is_proprietary(product_norm):
+                skipped += 1
+                continue
+
             key = make_lookup_key(vendor, product_norm, version)
 
             # Record field submission
@@ -1371,6 +1406,18 @@ def run_research(conn, max_items=200, delay_sec=0.5):
         vendor   = item['vendor'] or ''
         version  = item['version'] or ''
         platform = item['platform'] or 'unknown'
+
+        # Skip proprietary components — mark done immediately, no API calls
+        if is_proprietary(product):
+            save_result(conn, vendor, product, version, platform, {
+                'eol_status': 'unknown', 'confidence': 0, 'source': 'none',
+                'eol_date': '', 'latest_version': '', 'source_url': '',
+                'notes': 'Proprietary vendor component — no public EOL data',
+            })
+            conn.execute("UPDATE s3c_research_queue SET status='done' WHERE lookup_key=?", (key,))
+            conn.commit()
+            unknown += 1
+            continue
 
         # Mark in-progress
         conn.execute("""

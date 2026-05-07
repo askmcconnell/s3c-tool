@@ -207,8 +207,13 @@ export default function ResultsPage() {
         <div>
           <Link to="/" style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>← New scan</Link>
           <h1 style={{ fontSize: '1.5rem', marginTop: 6 }}>
-            {job.filename || 'Inventory Report'}
+            {job.machine_label || job.filename || 'Inventory Report'}
           </h1>
+          {job.machine_label && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              {job.filename}
+            </p>
+          )}
           <p className="text-muted" style={{ fontSize: '0.875rem' }}>
             {job.row_count?.toLocaleString()} items scanned
             {job.completed_at ? ` · ${new Date(job.completed_at).toLocaleString()}` : ''}
@@ -342,6 +347,87 @@ export default function ResultsPage() {
         </div>
       )}
 
+      {/* Risk summary banner */}
+      {report && (() => {
+        const eol        = summary.eol        ?? 0
+        const noPatch    = summary.no_patch   ?? 0
+        const cveFlagged = summary.cve_flagged ?? 0
+        const kevFlagged = summary.kev_flagged ?? 0
+        const total      = job.row_count ?? 1
+
+        // Items needing action = EOL + no_patch (distinct statuses)
+        // Items with CVEs may overlap either group — shown separately
+        const actionItems = eol + noPatch
+        if (actionItems === 0 && cveFlagged === 0 && kevFlagged === 0) return null
+
+        const actionPct = Math.round(actionItems / total * 100)
+        const cvePct    = Math.round(cveFlagged / total * 100)
+
+        return (
+          <div className="card mb-24" style={{
+            borderLeft: `4px solid ${eol > 0 ? 'var(--eol)' : 'var(--no-patch)'}`,
+            background: 'var(--bg-card)',
+          }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, fontSize: '0.95rem' }}>
+              🔍 Security Risk Summary
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, fontSize: '0.875rem' }}>
+              {/* EOL */}
+              {eol > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--eol)', flexShrink: 0 }} />
+                  <span>
+                    <strong style={{ color: 'var(--eol)' }}>{eol.toLocaleString()}</strong>
+                    <span className="text-muted"> EOL — no security patches available</span>
+                  </span>
+                </div>
+              )}
+              {/* No Patch */}
+              {noPatch > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--no-patch)', flexShrink: 0 }} />
+                  <span>
+                    <strong style={{ color: 'var(--no-patch)' }}>{noPatch.toLocaleString()}</strong>
+                    <span className="text-muted"> no patch in 12+ months</span>
+                  </span>
+                </div>
+              )}
+              {/* CVEs */}
+              {cveFlagged > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#dc2626', flexShrink: 0 }} />
+                  <span>
+                    <strong style={{ color: '#dc2626' }}>{cveFlagged.toLocaleString()}</strong>
+                    <span className="text-muted"> with known CVEs ({Math.round(cveFlagged / total * 100)}% of inventory)</span>
+                  </span>
+                </div>
+              )}
+              {/* KEV — actively exploited */}
+              {kevFlagged > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#7c3aed', flexShrink: 0 }} />
+                  <span>
+                    <strong style={{ color: '#7c3aed' }}>{kevFlagged.toLocaleString()}</strong>
+                    <span className="text-muted"> with </span>
+                    <strong style={{ color: '#7c3aed' }}>actively exploited</strong>
+                    <span className="text-muted"> CVEs (CISA KEV) — highest priority</span>
+                  </span>
+                </div>
+              )}
+            </div>
+            {/* Bottom line */}
+            <div style={{
+              marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)',
+              fontSize: '0.8rem', color: 'var(--text-muted)',
+            }}>
+              <strong style={{ color: 'var(--text)' }}>{actionItems.toLocaleString()} items ({actionPct}% of inventory)</strong>
+              {' '}need security review — {eol > 0 ? 'start with EOL software, which receives no further patches. ' : ''}
+              {cveFlagged > 0 ? `${cveFlagged.toLocaleString()} items carry at least one known CVE — filter by status and check the CVE column.` : ''}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Filter tabs */}
       {report && (
         <div className="filter-tabs">
@@ -397,7 +483,27 @@ export default function ResultsPage() {
                     ) : '—'}
                   </td>
                   <td>
-                    <CveBadge count={row.cve_count} critical={row.cve_critical} high={row.cve_high} />
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <CveBadge count={row.cve_count} critical={row.cve_critical} high={row.cve_high} />
+                      {row.kev_count > 0 && (
+                        <span
+                          title={`${row.kev_count} CVE${row.kev_count !== 1 ? 's' : ''} in CISA Known Exploited Vulnerabilities catalog — actively exploited in the wild`}
+                          style={{
+                            display: 'inline-block',
+                            background: '#7c3aed',
+                            color: '#fff',
+                            borderRadius: '4px',
+                            padding: '1px 6px',
+                            fontSize: '0.68rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.03em',
+                            cursor: 'default',
+                          }}
+                        >
+                          🚨 KEV
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="muted" style={{ fontSize: '0.75rem' }}>
                     {row.ref_source || '—'}

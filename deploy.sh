@@ -74,6 +74,7 @@ python3 - \
     "$SCRIPT_DIR/scripts/mac/s3c_scan_mac.py" \
     "$SCRIPT_DIR/scripts/linux/s3c_scan_linux.py" \
     "$SCRIPT_DIR/scripts/windows/s3c_scan_windows.ps1" \
+    "$SCRIPT_DIR/scripts/windows/Run_S3C_Scanner.bat" \
     "$SCANNERS_REMOTE_DIR" \
 << 'PYEOF'
 import sys, os
@@ -94,8 +95,8 @@ import paramiko
  dist, s3c_remote,
  deploy_plugin, plugin_local, plugin_remote,
  deploy_scanners,
- mac_scanner, linux_scanner, windows_scanner,
- scanners_remote) = sys.argv[1:15]
+ mac_scanner, linux_scanner, windows_scanner, windows_bat,
+ scanners_remote) = sys.argv[1:16]
 
 deploy_plugin   = deploy_plugin   == 'true'
 deploy_scanners = deploy_scanners == 'true'
@@ -174,7 +175,7 @@ if deploy_scanners:
     )
     sftp.putfo(io.BytesIO(scanner_htaccess.encode()), scanners_remote.rstrip('/') + '/.htaccess')
 
-    for scanner_path in [mac_scanner, linux_scanner, windows_scanner]:
+    for scanner_path in [mac_scanner, linux_scanner, windows_scanner, windows_bat]:
         name        = os.path.basename(scanner_path)
         remote_path = scanners_remote.rstrip('/') + '/' + name
         sftp.put(scanner_path, remote_path)

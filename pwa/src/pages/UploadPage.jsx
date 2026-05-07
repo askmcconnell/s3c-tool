@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { uploadInventory, getStats } from '../api/wordpress'
 
 export default function UploadPage() {
   const { user } = useAuth()
+  const navigate  = useNavigate()
   const fileRef  = useRef()
   const [dragging,   setDragging]   = useState(false)
   const [file,       setFile]       = useState(null)
@@ -142,33 +143,161 @@ export default function UploadPage() {
         </div>
       </div>
 
-      <hr style={{ border: 'none', borderTop: '1px solid var(--border)', marginBottom: 24 }} />
-
-      {/* Header */}
-      <div className="mb-24">
-        <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 6 }}>Upload Inventory</h2>
-        <p className="text-muted" style={{ fontSize: '0.9rem' }}>
-          Upload an S3C-Tool CSV from your Mac, Linux, or Windows scanner.
-          We'll match it against the reference database and email you the results.
-        </p>
-      </div>
-
-      {/* Stats bar */}
-      {stats && (
-        <div className="stats-grid mb-24">
-          {[
-            { num: stats.reference_entries?.toLocaleString(), label: 'Reference entries', color: 'var(--accent)' },
-            { num: stats.eol_entries?.toLocaleString(),       label: 'Known EOL',          color: 'var(--eol)' },
-            { num: stats.supported_entries?.toLocaleString(), label: 'Supported',           color: 'var(--supported)' },
-            { num: stats.scans_completed?.toLocaleString(),   label: 'Scans completed',     color: 'var(--text-muted)' },
-          ].map(({ num, label, color }) => (
-            <div className="stat-card" key={label}>
-              <div className="stat-num" style={{ color }}>{num ?? '—'}</div>
-              <div className="stat-label">{label}</div>
+      {/* ── Risk headline banner ── */}
+      {stats && stats.total_items > 0 && (() => {
+        const atRisk  = stats.at_risk_deduped ?? 0
+        const total   = stats.total_items
+        const riskPct = Math.round(atRisk / total * 100)
+        const ratio   = atRisk > 0 ? Math.round(total / atRisk) : null
+        return (
+          <div style={{
+            marginBottom: 28,
+            padding: '22px 26px',
+            borderRadius: 'var(--radius)',
+            background: 'linear-gradient(135deg, rgba(220,38,38,0.08) 0%, rgba(234,88,12,0.06) 100%)',
+            border: '1px solid rgba(220,38,38,0.25)',
+            position: 'relative', overflow: 'hidden',
+          }}>
+            <div style={{
+              position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
+              fontSize: '7rem', fontWeight: 900, color: 'rgba(220,38,38,0.06)',
+              lineHeight: 1, pointerEvents: 'none', userSelect: 'none',
+            }}>{riskPct}%</div>
+            <div style={{ position: 'relative' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                <span style={{ fontSize: '2.6rem', fontWeight: 900, color: 'var(--eol)', lineHeight: 1 }}>
+                  {riskPct}%
+                </span>
+                <span style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)' }}>
+                  of software needs security attention
+                </span>
+              </div>
+              <p style={{ margin: '0 0 12px', color: 'var(--text-muted)', fontSize: '0.875rem', maxWidth: 560 }}>
+                Of <strong style={{ color: 'var(--text)' }}>{atRisk.toLocaleString()}</strong> out of{' '}
+                <strong style={{ color: 'var(--text)' }}>{total.toLocaleString()}</strong> software instances
+                analyzed across <strong style={{ color: 'var(--text)' }}>{stats.scans_completed?.toLocaleString()}</strong> scans
+                are end-of-life, unpatched, or carry known CVEs.
+                {ratio && ratio >= 2 && (
+                  <> That's <strong style={{ color: 'var(--no-patch)' }}>1 in {ratio}</strong> pieces of software.</>
+                )}
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[
+                  { label: '🔴 End of Life',            color: 'rgba(220,38,38,0.3)',  bg: 'rgba(220,38,38,0.08)',  text: 'var(--eol)'      },
+                  { label: '🟡 No Patch 12+ Months',    color: 'rgba(234,88,12,0.3)',  bg: 'rgba(234,88,12,0.08)', text: 'var(--no-patch)' },
+                  { label: '🛡️ Known CVEs (deduped)',   color: 'rgba(220,38,38,0.2)',  bg: 'rgba(220,38,38,0.06)', text: '#dc2626'         },
+                  { label: 'Real environments · anonymised', color: 'var(--border)', bg: 'var(--bg-input)', text: 'var(--text-muted)' },
+                ].map(({ label, color, bg, text }) => (
+                  <span key={label} style={{
+                    fontSize: '0.72rem', fontWeight: 500, padding: '3px 9px',
+                    borderRadius: 20, background: bg, border: `1px solid ${color}`, color: text,
+                  }}>{label}</span>
+                ))}
+              </div>
             </div>
-          ))}
+          </div>
+        )
+      })()}
+
+      {/* Stats — community resource CTA */}
+      {stats && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ textAlign: 'center', marginBottom: 14 }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.1em',
+                          textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 6 }}>
+              Shared Industry Resource
+            </div>
+            <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+              Contribute to this ever-growing community knowledge base
+            </div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Every scan enriches the shared reference database — making results faster and more accurate for everyone.
+            </div>
+          </div>
+          <div className="stats-grid">
+            {[
+              { num: stats.reference_entries?.toLocaleString(), label: 'Reference entries', color: 'var(--accent)' },
+              { num: stats.eol_entries?.toLocaleString(),       label: 'Known EOL',          color: 'var(--eol)' },
+              { num: stats.supported_entries?.toLocaleString(), label: 'Supported',           color: 'var(--supported)' },
+              { num: stats.scans_completed?.toLocaleString(),   label: 'Scans completed',     color: 'var(--text-muted)' },
+            ].map(({ num, label, color }) => (
+              <div className="stat-card" key={label}>
+                <div className="stat-num" style={{ color }}>{num ?? '—'}</div>
+                <div className="stat-label">{label}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
+
+      <hr style={{ border: 'none', borderTop: '1px solid var(--border)', marginBottom: 24 }} />
+
+      {/* Step 1 — Download & Run Scanner */}
+      <div className="card mb-16">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <div style={{
+            width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+            background: 'rgba(74,144,217,0.15)', border: '1px solid rgba(74,144,217,0.35)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '0.8rem', fontWeight: 800, color: 'var(--accent)',
+          }}>1</div>
+          <div style={{ fontWeight: 700, fontSize: '1rem' }}>Download &amp; Run the Scanner</div>
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: 14 }}>
+          Run the free S3C-Tool scanner on your machine. It takes 1–3 minutes, requires no admin
+          rights, and saves a CSV file locally — nothing is sent until you choose to upload.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
+          {[
+            { icon: '🍎', label: 'macOS',   cmd: 'python3 s3c_scan_mac.py',   url: '/s3c/scanners/s3c_scan_mac.py' },
+            { icon: '🐧', label: 'Linux',   cmd: 'python3 s3c_scan_linux.py', url: '/s3c/scanners/s3c_scan_linux.py' },
+          ].map(({ icon, label, cmd, url }) => (
+            <a key={label} href={url} download
+               style={{
+                 display: 'flex', flexDirection: 'column', gap: 6,
+                 padding: '12px 14px', borderRadius: 8,
+                 background: 'var(--bg-input)', border: '1px solid var(--border)',
+                 textDecoration: 'none', color: 'inherit',
+               }}>
+              <div style={{ fontSize: '1.1rem' }}>{icon} <strong style={{ fontSize: '0.875rem' }}>{label}</strong></div>
+              <code style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{cmd}</code>
+              <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontWeight: 600 }}>Download scanner ↓</span>
+            </a>
+          ))}
+
+          {/* Windows — requires two files in the same folder */}
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 6,
+            padding: '12px 14px', borderRadius: 8,
+            background: 'var(--bg-input)', border: '1px solid var(--border)',
+          }}>
+            <div style={{ fontSize: '1.1rem' }}>🪟 <strong style={{ fontSize: '0.875rem' }}>Windows</strong></div>
+            <code style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Double-click Run_S3C_Scanner.bat</code>
+            <a href="/s3c/scanners/Run_S3C_Scanner.bat" download
+               style={{ fontSize: '0.72rem', color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+              Download launcher (.bat) ↓
+            </a>
+            <a href="/s3c/scanners/s3c_scan_windows.ps1" download
+               style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textDecoration: 'none' }}>
+              Also download scanner (.ps1) ↓
+            </a>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', marginTop: 2 }}>
+              Save both files to the same folder, then double-click the .bat
+            </span>
+          </div>
+        </div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+          Need help? See the <Link to="/docs" style={{ color: 'var(--accent)' }}>full Docs &amp; scanner guide</Link> for step-by-step instructions, prerequisites, and examples.
+        </div>
+      </div>
+
+      {/* Step 2 header */}
+      <div className="mb-16">
+        <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 6 }}>Step 2: Upload Your Inventory</h2>
+        <p className="text-muted" style={{ fontSize: '0.9rem' }}>
+          Upload the CSV generated by the scanner — or drop a CycloneDX / SPDX SBOM if you already have one.
+        </p>
+      </div>
 
       {/* Upload card */}
       <div className="card">
@@ -200,24 +329,36 @@ export default function UploadPage() {
           ) : (
             <>
               <div className="drop-zone-icon">⬆️</div>
-              <div className="drop-zone-title">Drop your inventory file here</div>
+              <div className="drop-zone-title">Step 2: Drop your inventory file here</div>
               <div className="drop-zone-sub">S3C-Tool CSV · CycloneDX JSON · SPDX JSON — max 5,000 rows / 2 MB</div>
             </>
           )}
         </div>
 
-        {/* Upload button */}
+        {/* Upload button — or sign-in prompt for guests */}
         {file && (
-          <button
-            className="btn btn-primary btn-full btn-lg mt-16"
-            onClick={handleUpload}
-            disabled={loading}
-          >
-            {loading
-              ? <><span className="spinner" style={{width:16,height:16}} /> Uploading…</>
-              : `Analyze ${file.name}`
-            }
-          </button>
+          user ? (
+            <button
+              className="btn btn-primary btn-full btn-lg mt-16"
+              onClick={handleUpload}
+              disabled={loading}
+            >
+              {loading
+                ? <><span className="spinner" style={{width:16,height:16}} /> Uploading…</>
+                : `Analyze ${file.name}`
+              }
+            </button>
+          ) : (
+            <div className="mt-16" style={{ textAlign: 'center' }}>
+              <p className="text-muted mb-12" style={{ fontSize: '0.9rem' }}>
+                Create a free account (or sign in) to analyze your file — it only takes a moment.
+              </p>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <Link to="/register" className="btn btn-primary">Create free account</Link>
+                <Link to="/login" className="btn btn-ghost">Sign in</Link>
+              </div>
+            </div>
+          )
         )}
 
         {/* Support callout */}
@@ -237,11 +378,10 @@ export default function UploadPage() {
 
           <div>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>📄 S3C-Tool CSV — machine inventory scanner</div>
-            <ol style={{ paddingLeft: 20, lineHeight: 2, color: 'var(--text-muted)', margin: 0 }}>
-              <li>Download the scanner from the <a href="/docs">Docs page</a></li>
-              <li>Run: <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--bg-input)', padding: '1px 6px', borderRadius: 4 }}>python3 s3c_scan_mac.py --quick</code></li>
-              <li>Upload the generated <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--bg-input)', padding: '1px 6px', borderRadius: 4 }}>.csv</code> above</li>
-            </ol>
+            <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+              Use the free scanner for macOS, Linux, or Windows (see Step 1 above).
+              The scanner runs locally in 1–3 minutes and saves a <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--bg-input)', padding: '1px 6px', borderRadius: 4 }}>.csv</code> file to your desktop.
+            </p>
           </div>
 
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>

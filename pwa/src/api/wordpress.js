@@ -58,10 +58,11 @@ export async function getMe() {
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 
-export async function uploadInventory(file) {
+export async function uploadInventory(file, machineLabel = '') {
   const token = getToken()
   const form  = new FormData()
   form.append('file', file)
+  if (machineLabel) form.append('machine_label', machineLabel)
 
   const sep = token ? '?_token=' + token : ''
   const res = await fetch(`${BASE}/upload${sep}`, {
